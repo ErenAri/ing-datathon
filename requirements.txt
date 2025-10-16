@@ -1,0 +1,11 @@
+pandas==2.3.3
+numpy==2.3.3
+scikit-learn==1.7.2
+lightgbm==4.6.0
+xgboost==3.0.5
+scipy==1.16.2
+catboost==1.2.8
+optuna==4.5.0
+matplotlib==3.10.7
+torch==2.2.1
+torchvision==0.15.2 

@@ -1,0 +1,79 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.env/
+.venv/
+.python-version
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Data and outputs
+data/raw/
+data/processed/
+data/submissions/
+data/portfolio/
+outputs/
+
+# Root-level datasets (keep repo lean; adjust if you want to track samples)
+customer_history.csv
+customers.csv
+reference_data.csv
+reference_data_test.csv
+submission.csv
+sample_submission.csv
+
+# Model artifacts
+models/
+catboost_info/
+*.pkl
+*.parquet
+*.npz
+*.onnx
+
+# Logs and caches
+*.log
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+coverage.xml
+
+# Build/dist
+dist/
+build/
+*.egg-info/
+
+# IDE/editor settings
+.vscode/
+.idea/
+
+# Local configs
+configs/*.local.*
+configs/secrets.*
+
+# Project specific
+predictions_bundle.pkl
+feature_importance.csv
+submission.csv
+ref_dates.pkl
+y_train.pkl
+tuned_params.json
+portfolio/
+
+# Planner artifacts (optional; uncomment if you don't want to track)
+clusters.json
+schedule_day1.txt
+
+# Temp files
+*.tmp
+*.bak
