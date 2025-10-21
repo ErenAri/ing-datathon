@@ -337,6 +337,75 @@ class AdvancedFeatureEngineering:
             rfm_df['rfm_frequency_count'] / 365.0
         )
 
+        def _safe_div(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+            denom = denominator.replace(0, np.nan)
+            res = numerator / denom
+            return res.replace([np.inf, -np.inf], np.nan)
+
+        # Explore additional windows (3M & 6M) for frequency/monetary behaviour
+        window_defs = [(3, '3m'), (6, '6m')]
+        for months, label in window_defs:
+            window_start = ref_date - pd.DateOffset(months=months)
+            window_slice = history_df[
+                (history_df['date'] > window_start) &
+                (history_df['date'] <= ref_date)
+            ].copy()
+            if window_slice.empty:
+                continue
+
+            window_slice['total_amount'] = (
+                window_slice['mobile_eft_all_amt'].fillna(0) +
+                window_slice['cc_transaction_all_amt'].fillna(0)
+            )
+
+            freq_series = window_slice.groupby('cust_id').size()
+            amt_series = window_slice.groupby('cust_id')['total_amount'].sum()
+
+            rfm_df[f'rfm_frequency_count_{label}'] = freq_series
+            rfm_df[f'rfm_monetary_value_{label}'] = amt_series
+            rfm_df[f'rfm_frequency_per_month_{label}'] = freq_series / float(months)
+            rfm_df[f'rfm_avg_transaction_value_{label}'] = (
+                amt_series / (freq_series + 1)
+            )
+
+        # Ratios and deltas vs annual (12M) baseline
+        if 'rfm_frequency_count' in rfm_df.columns:
+            base_freq = rfm_df['rfm_frequency_count'].astype(float).fillna(0)
+            for months, label in window_defs:
+                col = f'rfm_frequency_count_{label}'
+                if col in rfm_df.columns:
+                    rfm_df[f'rfm_frequency_share_{label}'] = _safe_div(
+                        rfm_df[col].astype(float),
+                        base_freq.replace({0: np.nan})
+                    )
+                    expected = base_freq * (months / 12.0)
+                    rfm_df[f'rfm_frequency_delta_{label}'] = (
+                        rfm_df[col].astype(float) - expected
+                    )
+
+        if 'rfm_monetary_value' in rfm_df.columns:
+            base_amt = rfm_df['rfm_monetary_value'].astype(float).fillna(0)
+            for months, label in window_defs:
+                col = f'rfm_monetary_value_{label}'
+                if col in rfm_df.columns:
+                    rfm_df[f'rfm_monetary_share_{label}'] = _safe_div(
+                        rfm_df[col].astype(float),
+                        base_amt.replace({0: np.nan})
+                    )
+                    expected_amt = base_amt * (months / 12.0)
+                    rfm_df[f'rfm_monetary_delta_{label}'] = (
+                        rfm_df[col].astype(float) - expected_amt
+                    )
+
+        # Exponentially weighted recency score emphasising very recent activity
+        if not rfm_data.empty:
+            rfm_temp = rfm_data[['cust_id', 'date']].copy()
+            rfm_temp['days_since'] = (ref_date - rfm_temp['date']).dt.days.astype(float)
+            decay_constant = 45.0  # ~1.5 month half-life
+            rfm_temp['rfm_recency_weight'] = np.exp(-rfm_temp['days_since'] / decay_constant)
+            weighted_recency = rfm_temp.groupby('cust_id')['rfm_recency_weight'].sum()
+            rfm_df['rfm_recency_exp_weighted'] = weighted_recency
+
         # Handle missing values
         rfm_df = rfm_df.fillna(-999)
 
@@ -397,76 +466,122 @@ class AdvancedFeatureEngineering:
         history_df = history_df.copy()
         history_df['date'] = pd.to_datetime(history_df['date'])
 
-        # Define periods for comparison
-        recent_start = ref_date - pd.DateOffset(months=3)
-        previous_start = ref_date - pd.DateOffset(months=6)
-
-        # Recent period (last 3 months)
-        recent_data = history_df[
-            (history_df['date'] > recent_start) &
-            (history_df['date'] <= ref_date)
-        ]
-
-        # Previous period (3-6 months ago)
-        previous_data = history_df[
-            (history_df['date'] > previous_start) &
-            (history_df['date'] <= recent_start)
-        ]
+        history_df['total_amt'] = (
+            history_df['mobile_eft_all_amt'].fillna(0) +
+            history_df['cc_transaction_all_amt'].fillna(0)
+        )
 
         change_features = {}
 
-        # Transaction count change
-        recent_txn_count = recent_data.groupby('cust_id').size()
-        previous_txn_count = previous_data.groupby('cust_id').size()
+        window_specs = [('1m', 1), ('3m', 3), ('6m', 6)]
 
-        change_features['behavior_txn_count_recent'] = recent_txn_count
-        change_features['behavior_txn_count_previous'] = previous_txn_count
-        change_features['behavior_txn_count_change_pct'] = (
-            ((recent_txn_count - previous_txn_count) / (previous_txn_count + 1)) * 100
-        )
+        def _safe_div_series(num: pd.Series, denom: pd.Series) -> pd.Series:
+            denom = denom.replace(0, np.nan)
+            res = num / denom
+            return res.replace([np.inf, -np.inf], np.nan)
 
-        # Transaction amount change
-        recent_data['total_amt'] = (
-            recent_data['mobile_eft_all_amt'].fillna(0) +
-            recent_data['cc_transaction_all_amt'].fillna(0)
-        )
-        previous_data['total_amt'] = (
-            previous_data['mobile_eft_all_amt'].fillna(0) +
-            previous_data['cc_transaction_all_amt'].fillna(0)
-        )
+        for label, months in window_specs:
+            recent_start = ref_date - pd.DateOffset(months=months)
+            previous_start = ref_date - pd.DateOffset(months=2 * months)
 
-        recent_amt = recent_data.groupby('cust_id')['total_amt'].sum()
-        previous_amt = previous_data.groupby('cust_id')['total_amt'].sum()
+            # Recent period (last `months`)
+            recent_data = history_df[
+                (history_df['date'] > recent_start) &
+                (history_df['date'] <= ref_date)
+            ]
 
-        change_features['behavior_amt_recent'] = recent_amt
-        change_features['behavior_amt_previous'] = previous_amt
-        change_features['behavior_amt_change_pct'] = (
-            ((recent_amt - previous_amt) / (previous_amt + 1)) * 100
-        )
+            # Previous period (`months` immediately before the recent window)
+            previous_data = history_df[
+                (history_df['date'] > previous_start) &
+                (history_df['date'] <= recent_start)
+            ]
 
-        # Product usage change
-        recent_products = recent_data.groupby('cust_id')['active_product_category_nbr'].mean()
-        previous_products = previous_data.groupby('cust_id')['active_product_category_nbr'].mean()
+            # Transaction count change
+            recent_txn_count = recent_data.groupby('cust_id').size()
+            previous_txn_count = previous_data.groupby('cust_id').size()
 
-        change_features['behavior_products_recent'] = recent_products
-        change_features['behavior_products_previous'] = previous_products
-        change_features['behavior_products_change_pct'] = (
-            ((recent_products - previous_products) / (previous_products + 1)) * 100
-        )
+            change_features[f'behavior_txn_count_recent_{label}'] = recent_txn_count
+            change_features[f'behavior_txn_count_previous_{label}'] = previous_txn_count
+            change_features[f'behavior_txn_count_change_pct_{label}'] = (
+                (recent_txn_count - previous_txn_count) / (previous_txn_count + 1) * 100
+            )
+            change_features[f'behavior_txn_count_change_ratio_{label}'] = _safe_div_series(
+                recent_txn_count.astype(float), previous_txn_count.astype(float) + 1e-9
+            )
+
+            # Transaction amount change
+            recent_amt = recent_data.groupby('cust_id')['total_amt'].sum()
+            previous_amt = previous_data.groupby('cust_id')['total_amt'].sum()
+
+            change_features[f'behavior_amt_recent_{label}'] = recent_amt
+            change_features[f'behavior_amt_previous_{label}'] = previous_amt
+            change_features[f'behavior_amt_change_pct_{label}'] = (
+                (recent_amt - previous_amt) / (previous_amt + 1) * 100
+            )
+            change_features[f'behavior_amt_change_ratio_{label}'] = _safe_div_series(
+                recent_amt.astype(float), previous_amt.astype(float) + 1e-9
+            )
+
+            # Product usage change
+            recent_products = recent_data.groupby('cust_id')['active_product_category_nbr'].mean()
+            previous_products = previous_data.groupby('cust_id')['active_product_category_nbr'].mean()
+
+            change_features[f'behavior_products_recent_{label}'] = recent_products
+            change_features[f'behavior_products_previous_{label}'] = previous_products
+            change_features[f'behavior_products_change_pct_{label}'] = (
+                (recent_products - previous_products) / (previous_products + 1) * 100
+            )
+            change_features[f'behavior_products_change_ratio_{label}'] = _safe_div_series(
+                recent_products.astype(float),
+                previous_products.astype(float) + 1e-9
+            )
+
+            # Preserve legacy column names for 3-month window (backwards compatibility)
+            if label == '3m':
+                change_features['behavior_txn_count_recent'] = recent_txn_count
+                change_features['behavior_txn_count_previous'] = previous_txn_count
+                change_features['behavior_txn_count_change_pct'] = change_features[f'behavior_txn_count_change_pct_{label}']
+
+                change_features['behavior_amt_recent'] = recent_amt
+                change_features['behavior_amt_previous'] = previous_amt
+                change_features['behavior_amt_change_pct'] = change_features[f'behavior_amt_change_pct_{label}']
+
+                change_features['behavior_products_recent'] = recent_products
+                change_features['behavior_products_previous'] = previous_products
+                change_features['behavior_products_change_pct'] = change_features[f'behavior_products_change_pct_{label}']
 
         change_df = pd.DataFrame(change_features)
+
+        # Cross-window comparisons to detect fast deterioration vs gradual decline
+        if {'behavior_txn_count_recent_1m', 'behavior_txn_count_recent_6m'}.issubset(change_df.columns):
+            monthly_normalizer = change_df['behavior_txn_count_recent_6m'] / 6.0
+            change_df['behavior_txn_recent_share_1m_over_6m'] = _safe_div_series(
+                change_df['behavior_txn_count_recent_1m'],
+                monthly_normalizer
+            )
+
+        if {'behavior_amt_recent_1m', 'behavior_amt_recent_6m'}.issubset(change_df.columns):
+            amt_normalizer = change_df['behavior_amt_recent_6m'] / 6.0
+            change_df['behavior_amt_recent_share_1m_over_6m'] = _safe_div_series(
+                change_df['behavior_amt_recent_1m'],
+                amt_normalizer
+            )
 
         # Activity trend classification
         def classify_trend(row):
             """Classify if customer activity is increasing, decreasing, or stable"""
-            txn_change = row.get('behavior_txn_count_change_pct', 0)
-            amt_change = row.get('behavior_amt_change_pct', 0)
+            txn_change = row.get('behavior_txn_count_change_pct_3m', row.get('behavior_txn_count_change_pct', 0))
+            amt_change = row.get('behavior_amt_change_pct_3m', row.get('behavior_amt_change_pct', 0))
+            one_month_change = row.get('behavior_txn_count_change_pct_1m', np.nan)
 
             if pd.isna(txn_change) or pd.isna(amt_change):
                 return 0  # Unknown
 
             # Decreasing: significant drop in both metrics
-            if txn_change < -20 or amt_change < -20:
+            if (
+                txn_change < -20 or amt_change < -20 or
+                (not pd.isna(one_month_change) and one_month_change < -30)
+            ):
                 return -1  # Decreasing (warning sign)
             # Increasing: significant increase
             elif txn_change > 20 or amt_change > 20:
@@ -477,10 +592,19 @@ class AdvancedFeatureEngineering:
         change_df['behavior_activity_trend'] = change_df.apply(classify_trend, axis=1)
 
         # Volatility score (how much behavior is changing)
-        change_df['behavior_volatility_score'] = (
-            change_df['behavior_txn_count_change_pct'].abs().fillna(0) +
-            change_df['behavior_amt_change_pct'].abs().fillna(0)
-        ) / 2
+        vol_components = []
+        for label, _ in window_specs:
+            col_txn = f'behavior_txn_count_change_pct_{label}'
+            col_amt = f'behavior_amt_change_pct_{label}'
+            if col_txn in change_df.columns:
+                vol_components.append(change_df[col_txn].abs().fillna(0))
+            if col_amt in change_df.columns:
+                vol_components.append(change_df[col_amt].abs().fillna(0))
+
+        if vol_components:
+            change_df['behavior_volatility_score'] = pd.concat(vol_components, axis=1).mean(axis=1)
+        else:
+            change_df['behavior_volatility_score'] = 0.0
 
         # Handle missing values
         change_df = change_df.fillna(-999)
@@ -542,6 +666,23 @@ class AdvancedFeatureEngineering:
         avg_products_last_12m = recent_history.groupby('cust_id')['active_product_category_nbr'].mean()
         lifecycle_features['lifecycle_products_per_year'] = avg_products_last_12m
 
+        # Engagement intensity by shorter windows to capture lifecycle shifts
+        rolling_windows = [(3, '3m'), (6, '6m')]
+        for months, label in rolling_windows:
+            window_start = ref_date - pd.DateOffset(months=months)
+            window_slice = history_df[history_df['date'] > window_start]
+
+            monthly_txn_count = window_slice.groupby('cust_id').size()
+            lifecycle_features[f'lifecycle_txn_per_month_{label}'] = (
+                monthly_txn_count / float(months)
+            )
+            lifecycle_features[f'lifecycle_txn_share_{label}'] = (
+                monthly_txn_count / (total_txns + 1)
+            )
+
+            avg_products_window = window_slice.groupby('cust_id')['active_product_category_nbr'].mean()
+            lifecycle_features[f'lifecycle_products_avg_{label}'] = avg_products_window
+
         # Activity consistency score (coefficient of variation)
         # Lower CV = more consistent, higher CV = more volatile
         monthly_txns = history_df.groupby([
@@ -569,6 +710,36 @@ class AdvancedFeatureEngineering:
         lifecycle_features['lifecycle_days_since_peak'] = (
             ref_date - peak_month.set_index('cust_id')['month_date']
         ).dt.days
+
+        # Multi-window lifecycle trends (6M vs previous 6M) to capture momentum shifts
+        last_6m_start = ref_date - pd.DateOffset(months=6)
+        prev_6m_start = ref_date - pd.DateOffset(months=12)
+
+        last_6m_data = history_df[
+            (history_df['date'] > last_6m_start) &
+            (history_df['date'] <= ref_date)
+        ]
+        prev_6m_data = history_df[
+            (history_df['date'] > prev_6m_start) &
+            (history_df['date'] <= last_6m_start)
+        ]
+
+        last_6m_txn = last_6m_data.groupby('cust_id').size()
+        prev_6m_txn = prev_6m_data.groupby('cust_id').size()
+
+        lifecycle_features['lifecycle_txn_trend_6m'] = (
+            (last_6m_txn - prev_6m_txn) / (prev_6m_txn + 1)
+        )
+
+        last_6m_amt = last_6m_data.groupby('cust_id')[
+            ['mobile_eft_all_amt', 'cc_transaction_all_amt']
+        ].sum().sum(axis=1)
+        prev_6m_amt = prev_6m_data.groupby('cust_id')[
+            ['mobile_eft_all_amt', 'cc_transaction_all_amt']
+        ].sum().sum(axis=1)
+        lifecycle_features['lifecycle_amt_trend_6m'] = (
+            (last_6m_amt - prev_6m_amt) / (prev_6m_amt + 1)
+        )
 
         # Customer lifecycle stage
         def determine_lifecycle_stage(row):
@@ -656,6 +827,42 @@ class AdvancedFeatureEngineering:
         inactive_streaks = months_diff.clip(lower=0).fillna(12).clip(upper=12)
         time_features['time_consecutive_inactive_months'] = inactive_streaks
 
+        # Shorter windows (1M, 3M, 6M) for activity surveillance
+        activity_windows = [(1, '1m'), (3, '3m'), (6, '6m')]
+        recent_12m_counts = recent_history.groupby('cust_id').size()
+
+        for months, label in activity_windows:
+            window_start = ref_date - pd.DateOffset(months=months)
+            window_slice = history_df[
+                (history_df['date'] > window_start) &
+                (history_df['date'] <= ref_date)
+            ].copy()
+
+            txn_counts = window_slice.groupby('cust_id').size()
+            time_features[f'time_txn_count_last_{label}'] = txn_counts
+            time_features[f'time_txn_per_month_last_{label}'] = (
+                txn_counts / float(max(months, 1))
+            )
+
+            window_slice['month'] = window_slice['date'].dt.to_period('M')
+            active_months_window = window_slice.groupby('cust_id')['month'].nunique()
+            time_features[f'time_active_months_last_{label}'] = active_months_window
+            time_features[f'time_inactive_months_last_{label}'] = (
+                months - active_months_window
+            ).clip(lower=0)
+
+            if months > 0:
+                denominator = recent_12m_counts / 12.0
+                time_features[f'time_activity_share_last_{label}'] = (
+                    txn_counts / (denominator + 1e-9)
+                )
+
+            if not window_slice.empty:
+                sorted_slice = window_slice.sort_values(['cust_id', 'date'])
+                gaps_window = sorted_slice.groupby('cust_id')['date'].diff().dt.days
+                avg_gap_window = gaps_window.groupby(sorted_slice['cust_id']).mean()
+                time_features[f'time_avg_days_between_txn_last_{label}'] = avg_gap_window
+
         # Activity decay rate
         # Compare activity in recent 3 months vs 6-9 months ago
         recent_3m = ref_date - pd.DateOffset(months=3)
@@ -673,6 +880,13 @@ class AdvancedFeatureEngineering:
         time_features['time_activity_decay_rate'] = (
             (old_count - recent_count) / (old_count + 1)
         )
+
+        # Capture acceleration by comparing 1M vs 3M momentum
+        if 'time_txn_count_last_1m' in time_features and 'time_txn_count_last_3m' in time_features:
+            denom = (time_features['time_txn_count_last_3m'] / 3.0)
+            time_features['time_activity_acceleration_1m_vs_3m'] = (
+                (time_features['time_txn_count_last_1m'] / (denom + 1e-9)) - 1
+            )
 
         # Time since peak activity
         # Find month with highest activity and calculate days since
@@ -697,6 +911,13 @@ class AdvancedFeatureEngineering:
         else:
             avg_gaps = pd.Series(dtype=float)
         time_features['time_avg_days_between_txn'] = avg_gaps.fillna(-999)
+
+        # Time between the last two observed transactions
+        last_txn_dates = history_df.groupby('cust_id')['date'].max()
+        second_last_txn = history_df.sort_values(['cust_id', 'date']).groupby('cust_id')['date'].nth(-2)
+        time_features['time_days_between_last_two_txn'] = (
+            (last_txn_dates - second_last_txn).dt.days
+        )
 
         time_df = pd.DataFrame(time_features)
 

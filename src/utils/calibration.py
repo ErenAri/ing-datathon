@@ -16,7 +16,7 @@ class CalibrationConfig:
     n_folds: int = 5
     segment_col: Optional[str] = None  # e.g., 'tenure'
     min_segment_rows: int = 2000
-    gamma_grid: Tuple[float, ...] = (0.85, 0.90, 0.95, 1.00, 1.05)
+    gamma_grid: Tuple[float, ...] = (0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20)
     eps: float = 1e-6
     raw_blend: float = 0.2
 

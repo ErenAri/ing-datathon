@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.append(str(ROOT))
 
 # Project metric: re-use existing implementation in modeling_pipeline
-from src.models.modeling_pipeline import ing_hubs_datathon_metric
+from src.models.modeling_pipeline import oof_composite_monthwise
 
 # Optional paths helper (fallback if module not present)
 try:
@@ -93,10 +93,17 @@ def suggest_params_xgb(trial: optuna.Trial) -> Dict[str, Any]:
     )
 
 
-def eval_lgb(params: Dict[str, Any], X: pd.DataFrame, y: np.ndarray, folds: List[Tuple[np.ndarray, np.ndarray, str]]) -> float:
+def eval_lgb(
+    params: Dict[str, Any],
+    X: pd.DataFrame,
+    y: np.ndarray,
+    ref_dates: pd.Series,
+    folds: List[Tuple[np.ndarray, np.ndarray, str]],
+    last_n: int,
+) -> float:
     import lightgbm as lgb
-    scores = []
-    for tr_idx, va_idx, m in folds:
+    oof = np.zeros(len(X), dtype=float)
+    for tr_idx, va_idx, _ in folds:
         dtrain = lgb.Dataset(X.iloc[tr_idx], label=y[tr_idx])
         dvalid = lgb.Dataset(X.iloc[va_idx], label=y[va_idx])
         num_threads = os.cpu_count() or 4
@@ -121,17 +128,23 @@ def eval_lgb(params: Dict[str, Any], X: pd.DataFrame, y: np.ndarray, folds: List
         )
         best_iter = getattr(model, 'best_iteration', None)
         p = model.predict(X.iloc[va_idx], num_iteration=best_iter)
-        comp = ing_hubs_datathon_metric(y[va_idx], p)
-        if isinstance(comp, tuple):
-            comp = comp[0]
-        scores.append(float(comp))
-    return float(np.mean(scores))
+        oof[va_idx] = p
+
+    score = oof_composite_monthwise(y, oof, ref_dates=ref_dates, last_n_months=last_n)
+    return float(score)
 
 
-def eval_xgb(params: Dict[str, Any], X: pd.DataFrame, y: np.ndarray, folds: List[Tuple[np.ndarray, np.ndarray, str]]) -> float:
+def eval_xgb(
+    params: Dict[str, Any],
+    X: pd.DataFrame,
+    y: np.ndarray,
+    ref_dates: pd.Series,
+    folds: List[Tuple[np.ndarray, np.ndarray, str]],
+    last_n: int,
+) -> float:
     import xgboost as xgb
-    scores = []
-    for tr_idx, va_idx, m in folds:
+    oof = np.zeros(len(X), dtype=float)
+    for tr_idx, va_idx, _ in folds:
         dtrain = xgb.DMatrix(X.iloc[tr_idx], label=y[tr_idx])
         dvalid = xgb.DMatrix(X.iloc[va_idx], label=y[va_idx])
         nthread = os.cpu_count() or 4
@@ -161,20 +174,27 @@ def eval_xgb(params: Dict[str, Any], X: pd.DataFrame, y: np.ndarray, folds: List
                 best_iter = 0
         it_range = (0, int(best_iter) + 1) if best_iter is not None else None
         p = model.predict(xgb.DMatrix(X.iloc[va_idx]), iteration_range=it_range)
-        comp = ing_hubs_datathon_metric(y[va_idx], p)
-        if isinstance(comp, tuple):
-            comp = comp[0]
-        scores.append(float(comp))
-    return float(np.mean(scores))
+        oof[va_idx] = p
+
+    score = oof_composite_monthwise(y, oof, ref_dates=ref_dates, last_n_months=last_n)
+    return float(score)
 
 
-def objective(trial: optuna.Trial, model_kind: str, X: pd.DataFrame, y: np.ndarray, folds):
+def objective(
+    trial: optuna.Trial,
+    model_kind: str,
+    X: pd.DataFrame,
+    y: np.ndarray,
+    ref_dates: pd.Series,
+    folds,
+    last_n: int,
+):
     if model_kind == 'lgb':
         params = suggest_params_lgb(trial)
-        score = eval_lgb(params, X, y, folds)
+        score = eval_lgb(params, X, y, ref_dates, folds, last_n)
     else:
         params = suggest_params_xgb(trial)
-        score = eval_xgb(params, X, y, folds)
+        score = eval_xgb(params, X, y, ref_dates, folds, last_n)
     trial.set_user_attr('params', params)
     return score
 
@@ -225,7 +245,7 @@ def main():
     start = time.time()
     try:
         study.optimize(
-            lambda t: objective(t, args.model, X, y, folds),
+            lambda t: objective(t, args.model, X, y, ref_dates, folds, args.last_n),
             n_trials=args.trials,
             timeout=args.timeout,
             show_progress_bar=True,

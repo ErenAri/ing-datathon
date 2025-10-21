@@ -3,19 +3,29 @@ import os
 import glob
 import pickle
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
+
+# Allow running as a standalone script by adding project root to sys.path
+try:
+    import sys as _sys
+    _ROOT = Path(__file__).resolve().parents[2]
+    if str(_ROOT) not in _sys.path:
+        _sys.path.append(str(_ROOT))
+except Exception:
+    pass
 
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
+import lightgbm as lgb
 
 from sklearn.isotonic import IsotonicRegression
 
 from src.models.modeling_pipeline import oof_composite_monthwise, ing_hubs_datathon_metric
 
 
-def _read_parquet_oof_test(oof_dir: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def _read_parquet_oof_test(oof_dir: str) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
     files = glob.glob(os.path.join(oof_dir, "*.parquet"))
     cols_oof = {}
     cols_test = {}
@@ -37,7 +47,7 @@ def _read_parquet_oof_test(oof_dir: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     return oof_df, test_df
 
 
-def _read_bundle(bundle_path: str) -> Tuple[pd.DataFrame, pd.DataFrame, np.ndarray, np.ndarray]:
+def _read_bundle(bundle_path: str) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], np.ndarray, np.ndarray]:
     with open(bundle_path, 'rb') as f:
         b = pickle.load(f)
     base_oof = {}
@@ -75,7 +85,7 @@ def _get_test_ids() -> pd.Series:
         return sub['cust_id']
 
 
-def _pick_stable_features(X_tr: pd.DataFrame, X_te: pd.DataFrame, top_n: int = 5, allowlist: List[str] = None) -> List[str]:
+def _pick_stable_features(X_tr: pd.DataFrame, X_te: pd.DataFrame, top_n: int = 5, allowlist: Optional[List[str]] = None) -> List[str]:
     if allowlist:
         feats = [c for c in allowlist if c in X_tr.columns and c in X_te.columns]
         return feats[:top_n]
@@ -147,9 +157,11 @@ def _beta_calibration(oof: np.ndarray, y: np.ndarray, test_raw: np.ndarray):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Stacking meta-learner (logistic regression) with calibration.")
+    parser = argparse.ArgumentParser(description="Stacking meta-learner with calibration (logistic or LightGBM).")
     parser.add_argument("--meta-features", type=str, default="", help="Comma-separated feature names to include as meta features")
     parser.add_argument("--C", type=float, default=1.0, help="Inverse of regularization strength for LogisticRegression")
+    parser.add_argument("--meta-model", type=str, choices=["logistic", "lgb"], default="logistic",
+                        help="Meta model type: 'logistic' (default) or 'lgb' for LightGBM")
     args = parser.parse_args()
 
     # Load base OOF/test predictions
@@ -167,7 +179,11 @@ def main():
     # Load feature matrices to source meta-features and tenure for calibration
     X_train = X_test = None
     tenure_tr = tenure_te = None
-    meta_list = [s for s in args.meta_features.split(',') if s.strip()] if args.meta_features else []
+    meta_list = [s.strip() for s in args.meta_features.split(',') if s.strip()] if args.meta_features else []
+    auto_meta = False
+    if meta_list and any(m.lower() == 'auto' for m in meta_list):
+        auto_meta = True
+        meta_list = []
     try:
         with open('X_train.pkl', 'rb') as f:
             X_train = pickle.load(f)
@@ -183,6 +199,8 @@ def main():
         # no feature matrices available; proceed with base predictions only
         X_train = X_test = None
         tenure_tr = tenure_te = None
+        if not meta_list and auto_meta:
+            print("Warning: requested auto meta-features but feature matrices unavailable; proceeding with base predictions only.")
         if not meta_list:
             meta_list = []
 
@@ -216,23 +234,52 @@ def main():
     folds = list(month_folds(pd.Series(pd.to_datetime(ref_dates)), last_n=6, gap=1))
 
     oof_meta = np.zeros(len(M_tr), dtype=float)
-    test_meta_stack = []
+    test_meta_stack: List[np.ndarray] = []
+    meta_model = args.meta_model.lower()
+    y_train_arr = np.asarray(y_train)
 
     for fold, (tr_idx, va_idx, ml) in enumerate(folds, 1):
         X_tr_f = M_tr.iloc[tr_idx].values
-        y_tr_f = np.asarray(y_train)[tr_idx]
         X_va_f = M_tr.iloc[va_idx].values
-        # standardize based on train fold
-        scaler = StandardScaler()
-        X_tr_s = scaler.fit_transform(X_tr_f)
-        X_va_s = scaler.transform(X_va_f)
-        # model
-        lr = LogisticRegression(C=float(args.C), solver='lbfgs', max_iter=2000)
-        lr.fit(X_tr_s, y_tr_f)
-        oof_meta[va_idx] = lr.predict_proba(X_va_s)[:, 1]
-        if M_te is not None:
-            X_te_s = scaler.transform(M_te.values)
-            test_meta_stack.append(lr.predict_proba(X_te_s)[:, 1])
+        y_tr_f = y_train_arr[tr_idx]
+        y_va_f = y_train_arr[va_idx]
+
+        if meta_model == 'logistic':
+            scaler = StandardScaler()
+            X_tr_s = scaler.fit_transform(X_tr_f)
+            X_va_s = scaler.transform(X_va_f)
+            clf = LogisticRegression(C=float(args.C), solver='lbfgs', max_iter=2000)
+            clf.fit(X_tr_s, y_tr_f)
+            preds = clf.predict_proba(X_va_s)[:, 1]
+            oof_meta[va_idx] = preds
+            if M_te is not None:
+                X_te_s = scaler.transform(M_te.values)
+                test_meta_stack.append(clf.predict_proba(X_te_s)[:, 1])
+        else:
+            booster = lgb.LGBMClassifier(
+                objective='binary',
+                boosting_type='gbdt',
+                learning_rate=0.05,
+                num_leaves=31,
+                n_estimators=800,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                reg_lambda=0.1,
+                random_state=42,
+            )
+            booster.fit(
+                X_tr_f,
+                y_tr_f,
+                eval_set=[(X_va_f, y_va_f)],
+                eval_metric='auc',
+                callbacks=[lgb.early_stopping(100, verbose=False)],
+            )
+            best_iter = booster.best_iteration_ if booster.best_iteration_ is not None else booster.n_estimators_
+            preds = np.asarray(booster.predict_proba(X_va_f, num_iteration=best_iter))[:, 1]
+            oof_meta[va_idx] = preds
+            if M_te is not None:
+                test_meta_stack.append(np.asarray(booster.predict_proba(M_te.values, num_iteration=best_iter))[:, 1])
+
         print(f"Fold {fold} [{ml}] done")
 
     # Aggregate test preds
@@ -243,15 +290,15 @@ def main():
         raise RuntimeError("No base test predictions available for stacking")
 
     # Report OOF composite
-    score_meta = oof_composite_monthwise(np.asarray(y_train), oof_meta, ref_dates=pd.Series(ref_dates), last_n_months=6)
+    score_meta = oof_composite_monthwise(y_train_arr, oof_meta, ref_dates=pd.Series(ref_dates), last_n_months=6)
     print(f"OOF Composite (meta): {score_meta:.6f}")
 
     # Calibration (same approach as main: isotonic vs beta, gamma sweep)
-    iso_oof, iso_test = _segment_isotonic(oof_meta, np.asarray(y_train), test_meta_raw, tenure=tenure_tr)
-    beta_oof, beta_test = _beta_calibration(oof_meta, np.asarray(y_train), test_meta_raw)
+    iso_oof, iso_test = _segment_isotonic(oof_meta, y_train_arr, test_meta_raw, tenure=tenure_tr)
+    beta_oof, beta_test = _beta_calibration(oof_meta, y_train_arr, test_meta_raw)
     # choose better by composite
-    c_iso = oof_composite_monthwise(np.asarray(y_train), iso_oof, ref_dates=pd.Series(ref_dates), last_n_months=6)
-    c_beta = oof_composite_monthwise(np.asarray(y_train), beta_oof, ref_dates=pd.Series(ref_dates), last_n_months=6)
+    c_iso = oof_composite_monthwise(y_train_arr, iso_oof, ref_dates=pd.Series(ref_dates), last_n_months=6)
+    c_beta = oof_composite_monthwise(y_train_arr, beta_oof, ref_dates=pd.Series(ref_dates), last_n_months=6)
     if c_iso >= c_beta:
         chosen_oof, chosen_test, chosen_name = iso_oof, iso_test, 'isotonic'
     else:
@@ -264,18 +311,19 @@ def main():
     EPS = 1e-6
     for g in gammas:
         p_adj = np.clip(np.power(chosen_oof, g), EPS, 1.0 - EPS)
-        c = oof_composite_monthwise(np.asarray(y_train), p_adj, ref_dates=pd.Series(ref_dates), last_n_months=6)
+        c = oof_composite_monthwise(y_train_arr, p_adj, ref_dates=pd.Series(ref_dates), last_n_months=6)
         if c > best_c:
             best_c = c
             best_gamma = g
     print(f"Selected temperature gamma={best_gamma:.3f} (OOF composite={best_c:.6f})")
     calibrated_test = np.clip(np.power(chosen_test, best_gamma), EPS, 1.0 - EPS)
+    calibrated_oof = np.clip(np.power(chosen_oof, best_gamma), EPS, 1.0 - EPS)
 
     # Tail correction similar to main
     if calibrated_test.min() > 0.10:
         for g2 in [1.1, 1.2, 1.3]:
             _oof_try = np.clip(np.power(chosen_oof, g2), EPS, 1.0 - EPS)
-            _score_try = oof_composite_monthwise(np.asarray(y_train), _oof_try, ref_dates=pd.Series(ref_dates), last_n_months=6)
+            _score_try = oof_composite_monthwise(y_train_arr, _oof_try, ref_dates=pd.Series(ref_dates), last_n_months=6)
             if _score_try >= (best_c - 0.002):
                 calibrated_test = np.clip(np.power(chosen_test, g2), EPS, 1.0 - EPS)
                 print(f"Tail correction applied with gamma={g2}")
@@ -284,6 +332,8 @@ def main():
     # Save OOF/test and submission
     os.makedirs(os.path.join('outputs', 'stacking'), exist_ok=True)
     np.save(os.path.join('outputs', 'stacking', 'oof_meta.npy'), oof_meta.astype(np.float32))
+    # Also save calibrated OOF for consistent scoring/analysis
+    np.save(os.path.join('outputs', 'stacking', 'oof_meta_calibrated.npy'), calibrated_oof.astype(np.float32))
     np.save(os.path.join('outputs', 'stacking', 'test_meta_raw.npy'), test_meta_raw.astype(np.float32))
     np.save(os.path.join('outputs', 'stacking', 'test_meta_calibrated.npy'), calibrated_test.astype(np.float32))
 

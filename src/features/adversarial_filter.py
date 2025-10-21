@@ -161,7 +161,8 @@ def _time_stratified_cv_feature_importance(
 def _compute_shap_importance(models: List[lgb.Booster], X: pd.DataFrame, top_m: int = 2000) -> pd.Series:
     """Approximate SHAP importance by mean |shap| across a sample of rows and models."""
     try:
-        import shap
+        import importlib
+        shap = importlib.import_module('shap')
     except Exception:
         print("shap not installed; skipping SHAP importance and using gain only.")
         return pd.Series(np.zeros(X.shape[1]), index=X.columns)

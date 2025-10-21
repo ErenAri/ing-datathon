@@ -3,11 +3,12 @@ import pickle
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
-from typing import Tuple, Dict
+from typing import Tuple, Dict, List, Any
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import roc_auc_score
+import lightgbm as lgb
 
 from src.models.modeling_pipeline import month_folds, ing_hubs_datathon_metric, oof_composite_monthwise
 
@@ -25,8 +26,14 @@ SUBMISSIONS_DIR = os.path.join('data', 'submissions')
 @dataclass
 class MetaStackerConfig:
     use_ridge: bool = True
+    enable_lightgbm: bool = True
     ridge_alpha_grid: Tuple[float, ...] = (0.1, 1.0, 5.0, 10.0)
     logistic_C_grid: Tuple[float, ...] = (0.1, 0.5, 1.0, 2.0, 5.0)
+    lgb_param_grid: Tuple[Dict[str, Any], ...] = (
+        {'num_leaves': 31, 'learning_rate': 0.05, 'feature_fraction': 0.8, 'subsample': 0.9, 'reg_lambda': 0.0},
+        {'num_leaves': 48, 'learning_rate': 0.04, 'feature_fraction': 0.7, 'subsample': 0.85, 'reg_lambda': 0.5},
+    )
+    lgb_n_estimators: int = 800
     last_n_months: int = 6
     gap_months: int = 1
     random_state: int = 42
@@ -42,6 +49,9 @@ def load_bundle(path: str) -> Dict[str, np.ndarray]:
 
 
 def build_meta_features(bundle: Dict[str, np.ndarray]) -> Tuple[pd.DataFrame, pd.Series, pd.Series, pd.DataFrame]:
+    X_train_df = None
+    X_test_df = None
+
     # Mandatory model OOF predictions
     required_oof = []
     name_map = {}
@@ -54,17 +64,25 @@ def build_meta_features(bundle: Dict[str, np.ndarray]) -> Tuple[pd.DataFrame, pd
 
     X_meta = pd.DataFrame({name_map[k]: bundle[k] for k in name_map})
 
-    # Attempt to add stable raw features from a cached training features file if exists
-    # Fallback: try to infer from original feature engineering outputs (not stored in bundle)
-    # Since bundle does not include raw features, we attempt to locate a cached parquet/csv under outputs/features
-    added_cols = []
-    for cand in STABLE_FEATURES:
-        # Search possible file or derived feature naming synonyms
-        # Provide pass-through if not found
-        if cand in X_meta.columns:
-            added_cols.append(cand)
-            continue
-    # Note: Without persisted raw features we cannot append them; user can re-run with extended bundle if needed.
+    # Attempt to append stable raw features from cached training/test matrices
+    added_cols: List[str] = []
+    try:
+        with open('X_train.pkl', 'rb') as f:
+            X_train_df = pickle.load(f)
+        with open('X_test.pkl', 'rb') as f:
+            X_test_df = pickle.load(f)
+        if len(X_train_df) >= len(X_meta):
+            for cand in STABLE_FEATURES:
+                if cand in X_train_df.columns and cand in X_test_df.columns:
+                    X_meta[cand] = np.asarray(X_train_df[cand])[: len(X_meta)]
+                    added_cols.append(cand)
+        else:
+            print("[meta_stacker] Warning: X_train.pkl shorter than meta matrix; skipping raw feature augmentation.")
+    except Exception:
+        pass
+
+    if added_cols:
+        print(f"[meta_stacker] Appended stable features: {', '.join(added_cols)}")
 
     y = pd.Series(bundle['y_train'], name='y')
     ref_dates = pd.Series(bundle['ref_dates'], name='ref_date')
@@ -76,12 +94,19 @@ def build_meta_features(bundle: Dict[str, np.ndarray]) -> Tuple[pd.DataFrame, pd
             test_meta[k.replace('test_', '')] = bundle[k]
     X_test_meta = pd.DataFrame(test_meta)
 
+    if added_cols and X_test_df is not None:
+        for cand in added_cols:
+            if cand in X_test_df.columns:
+                X_test_meta[cand] = np.asarray(X_test_df[cand])[: len(X_test_meta)]
+
     return X_meta, y, ref_dates, X_test_meta
 
 
 def time_cv_train(X: pd.DataFrame, y: pd.Series, ref_dates: pd.Series, cfg: MetaStackerConfig):
     oof_log = np.zeros(len(X))
     oof_ridge = np.zeros(len(X)) if cfg.use_ridge else None
+    oof_lgb = np.zeros(len(X)) if cfg.enable_lightgbm else None
+    lgb_params_used: List[Dict[str, Any]] = []
 
     folds = list(month_folds(ref_dates, last_n=cfg.last_n_months, gap=cfg.gap_months))
     if not folds:
@@ -146,6 +171,46 @@ def time_cv_train(X: pd.DataFrame, y: pd.Series, ref_dates: pd.Series, cfg: Meta
             oof_ridge[va_idx] = best_ridge_preds
             print(f"Fold {fold_id} Ridge best composite={best_ridge_score:.6f} month={mlabel}")
 
+        if cfg.enable_lightgbm:
+            best_lgb_score = -np.inf
+            best_lgb_preds = None
+            best_params = None
+            for params in cfg.lgb_param_grid:
+                booster = lgb.LGBMClassifier(
+                    objective='binary',
+                    n_estimators=cfg.lgb_n_estimators,
+                    random_state=cfg.random_state,
+                    **params,
+                )
+                booster.fit(
+                    X_tr,
+                    y_tr,
+                    eval_set=[(X_va, y_va)],
+                    eval_metric='auc',
+                    callbacks=[lgb.early_stopping(100, verbose=False)],
+                )
+                best_iter = booster.best_iteration_ if booster.best_iteration_ is not None else booster.n_estimators_
+                preds = np.asarray(booster.predict_proba(X_va, num_iteration=best_iter))[:, 1]
+                try:
+                    auc = roc_auc_score(y_va, preds)
+                    if auc < 0.5:
+                        preds = 1 - preds
+                except Exception:
+                    pass
+                score, _ = ing_hubs_datathon_metric(y_va, preds)
+                if score > best_lgb_score:
+                    best_lgb_score = score
+                    best_lgb_preds = preds
+                    best_params = booster.get_params()
+            if oof_lgb is None:
+                oof_lgb = np.zeros(len(X), dtype=float)
+            if best_lgb_preds is None:
+                best_lgb_preds = np.zeros(len(va_idx), dtype=float)
+            oof_lgb[va_idx] = best_lgb_preds
+            if best_params is not None:
+                lgb_params_used.append(best_params)
+            print(f"Fold {fold_id} LightGBM best composite={best_lgb_score:.6f} month={mlabel}")
+
     # Select model type by global OOF composite
     comp_log = oof_composite_monthwise(y, oof_log, ref_dates=ref_dates, last_n_months=cfg.last_n_months)
     print(f"Logistic global OOF composite={comp_log:.6f}")
@@ -155,18 +220,36 @@ def time_cv_train(X: pd.DataFrame, y: pd.Series, ref_dates: pd.Series, cfg: Meta
     else:
         comp_ridge = -np.inf
 
-    use_logistic = comp_log >= comp_ridge
-    chosen_oof = oof_log if use_logistic else oof_ridge
-    chosen_label = 'logistic' if use_logistic else 'ridge'
-    print(f"Chosen meta model: {chosen_label} (OOF composite={max(comp_log, comp_ridge):.6f})")
+    if cfg.enable_lightgbm and oof_lgb is not None:
+        comp_lgb = oof_composite_monthwise(y, oof_lgb, ref_dates=ref_dates, last_n_months=cfg.last_n_months)
+        print(f"LightGBM global OOF composite={comp_lgb:.6f}")
+    else:
+        comp_lgb = -np.inf
+
+    scores_map = {
+        'logistic': comp_log,
+        'ridge': comp_ridge,
+        'lgb': comp_lgb,
+    }
+    chosen_label = max(scores_map, key=lambda k: scores_map[k])
+    if chosen_label == 'logistic':
+        chosen_oof = oof_log
+    elif chosen_label == 'ridge':
+        chosen_oof = oof_ridge
+    else:
+        chosen_oof = oof_lgb
+    print(f"Chosen meta model: {chosen_label} (OOF composite={scores_map[chosen_label]:.6f})")
 
     return {
         'oof_log': oof_log,
         'oof_ridge': oof_ridge,
+        'oof_lgb': oof_lgb,
+        'lgb_params': lgb_params_used,
         'chosen_oof': chosen_oof,
         'chosen_model': chosen_label,
         'comp_log': comp_log,
-        'comp_ridge': comp_ridge
+        'comp_ridge': comp_ridge,
+        'comp_lgb': comp_lgb,
     }
 
 
@@ -189,6 +272,36 @@ def fit_full_and_predict(X: pd.DataFrame, y: pd.Series, X_test: pd.DataFrame, re
                 best_pipe = pipe
         print(f"Refit logistic with C={best_C} (full-data composite={best_score:.6f})")
         return best_pipe.predict_proba(X_test)[:, 1]
+    elif chosen_model == 'lgb':
+        best_score = -np.inf
+        best_booster = None
+        best_iter = None
+        last_booster = None
+        for params in cfg.lgb_param_grid:
+            booster = lgb.LGBMClassifier(
+                objective='binary',
+                boosting_type='gbdt',
+                n_estimators=cfg.lgb_n_estimators,
+                random_state=cfg.random_state,
+                **params,
+            )
+            booster.fit(X, y)
+            preds = np.asarray(booster.predict_proba(X))[:, 1]
+            score = oof_composite_monthwise(y, preds, ref_dates=ref_dates, last_n_months=cfg.last_n_months)
+            if score > best_score:
+                best_score = score
+                best_booster = booster
+                best_iter = booster.n_estimators_
+            last_booster = booster
+        if best_booster is None:
+            best_booster = last_booster
+            best_iter = last_booster.n_estimators_ if last_booster is not None else cfg.lgb_n_estimators
+        if best_iter is None:
+            best_iter = cfg.lgb_n_estimators
+        print(f"Refit LightGBM (full-data composite={best_score:.6f})")
+        if best_booster is None:
+            raise RuntimeError("LightGBM booster not available after refit.")
+        return np.asarray(best_booster.predict_proba(X_test, num_iteration=best_iter))[:, 1]
     else:
         best_alpha = None
         best_score = -np.inf

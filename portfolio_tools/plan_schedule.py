@@ -185,16 +185,20 @@ def _read_submissions(paths: List[str]) -> Tuple[Optional[pd.Index], Optional[pd
 
 
 def _spearman_corr_matrix(mat: pd.DataFrame) -> pd.DataFrame:
-    from scipy.stats import spearmanr
-    arr = mat.values.astype(float)
-    arr[~np.isfinite(arr)] = np.nan
-    corr, _ = spearmanr(arr, axis=0, nan_policy='omit')
-    n = mat.shape[1]
-    corr = np.asarray(corr)
-    if corr.shape != (n, n):
-        corr = corr[:n, :n]
-    np.fill_diagonal(corr, 1.0)
-    return pd.DataFrame(corr, index=mat.columns, columns=mat.columns).astype(float)
+    # Prefer pandas' stable Spearman, with guards for degenerate sizes
+    n = int(mat.shape[1])
+    if n == 0:
+        return pd.DataFrame()
+    if n == 1:
+        col = mat.columns.tolist()
+        return pd.DataFrame([[1.0]], index=col, columns=col)
+    corr_df = mat.corr(method='spearman', min_periods=1)
+    # Ensure square shape and float dtype
+    corr_df = corr_df.reindex(index=mat.columns, columns=mat.columns)
+    # Replace inf/nan and set diagonal to 1.0
+    corr_df = corr_df.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    np.fill_diagonal(corr_df.values, 1.0)
+    return corr_df.astype(float)
 
 
 def _clusters_from_threshold(corr: pd.DataFrame, thr: float) -> List[List[str]]:

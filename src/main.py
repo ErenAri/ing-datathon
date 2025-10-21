@@ -12,6 +12,7 @@ import warnings
 warnings.filterwarnings('ignore')
 from datetime import datetime
 import argparse
+from itertools import combinations
 from sklearn.metrics import roc_auc_score
 
 # Import Optuna-optimized parameters (after running hyperparameter_optimizer.py)
@@ -57,10 +58,15 @@ parser.add_argument('--last-n', dest='last_n', type=int, default=6,
                     help='Number of most recent months to use for time-based CV and metrics')
 parser.add_argument('--calib', choices=['auto', 'isotonic', 'beta', 'none'], default='auto',
                     help='Calibration strategy: auto compares isotonic vs beta; none disables calibration')
-parser.add_argument('--gamma-grid', type=str, default='0.85,0.90,0.95,1.00,1.05',
+parser.add_argument('--gamma-grid', type=str, default='0.80,0.85,0.90,0.95,1.00,1.05,1.10,1.15,1.20',
                     help='Comma-separated gamma values for calibration power adjustment')
 parser.add_argument('--no-interactions', action='store_true',
                     help='Skip feature interaction engineering step')
+parser.add_argument('--interaction-top-n', type=int, default=8,
+                    help='Number of top importance-ranked features to use for interaction generation')
+parser.add_argument('--interaction-importance-path', type=str,
+                    default=os.path.join('outputs', 'reports', 'feature_importance.csv'),
+                    help='Path to feature importance CSV used to select features for interactions')
 parser.add_argument('--iter-adv', action='store_true',
                     help='Enable iterative adversarial filtering loop to push domain AUC ≤ target before modeling')
 parser.add_argument('--iter-adv-k', type=int, default=5,
@@ -93,6 +99,14 @@ if args.models:
         args.with_stacker = True
     if ('ftt' in args.models) and (not args.with_ftt):
         args.with_ftt = True
+    # Deduplicate models list while preserving order
+    args.models = list(dict.fromkeys(args.models))
+else:
+    args.models = []
+
+# If FT-Transformer flag is enabled but missing from model list, append it
+if args.with_ftt and ('ftt' not in args.models):
+    args.models.append('ftt')
 
 # Parse gamma grid for calibration
 try:
@@ -353,16 +367,9 @@ if args.adv_filter:
 # FEATURE INTERACTION ENGINEERING
 # ============================================================================
 
-def add_feature_interactions(X_train, X_test):
+def add_feature_interactions(X_train, X_test, *, top_n=8, importance_path=None):
     """
     Create interaction features between top predictive features.
-
-    Generates multiplicative and ratio-based interactions for the top 5 features:
-    - active_product_category_nbr_mean_12m
-    - cc_transaction_all_cnt_sum_1m
-    - mobile_eft_all_amt_trend_mean
-    - age
-    - tenure
 
     Parameters:
     -----------
@@ -370,6 +377,10 @@ def add_feature_interactions(X_train, X_test):
         Training features
     X_test : pd.DataFrame
         Test features
+    top_n : int
+        Number of top-importance features to consider for interactions
+    importance_path : str | None
+        Path to feature importance CSV
 
     Returns:
     --------
@@ -380,52 +391,145 @@ def add_feature_interactions(X_train, X_test):
     print("CREATING FEATURE INTERACTIONS")
     print("="*60)
 
-    # Top 5 features to create interactions from
-    top_features = [
-        'active_product_category_nbr_mean_12m',
-        'cc_transaction_all_cnt_sum_1m',
-        'mobile_eft_all_amt_trend_mean',
-        'age',
-        'tenure'
-    ]
+    importance_path = importance_path or os.path.join('outputs', 'reports', 'feature_importance.csv')
 
-    # Filter to only features that exist in the dataframe
-    existing_features = [f for f in top_features if f in X_train.columns]
+    X_train = X_train.copy()
+    X_test = X_test.copy()
 
-    print(f"Found {len(existing_features)} out of {len(top_features)} features in dataset")
-    print(f"Creating interactions for: {existing_features}")
+    def _safe_numeric_columns(columns):
+        """Filter columns to those present in train/test and numeric."""
+        present = []
+        for col in columns:
+            if col not in X_train.columns:
+                continue
+            if col not in X_test.columns:
+                continue
+            if not pd.api.types.is_numeric_dtype(X_train[col]):
+                continue
+            present.append(col)
+        return present
 
+    def _load_top_features_from_importance(path: str, n: int) -> list[str]:
+        """Load top-n feature names sorted by importance_mean from CSV."""
+        try:
+            imp_df = pd.read_csv(path)
+        except FileNotFoundError:
+            print(f"  ! Feature importance file not found at {path}; falling back to variance ranking.")
+            return []
+        except Exception as exc:
+            print(f"  ! Failed to read feature importance file ({exc}); falling back to variance ranking.")
+            return []
+
+        if 'importance_mean' not in imp_df.columns:
+            fold_cols = [c for c in imp_df.columns if c.startswith('importance_fold_')]
+            if fold_cols:
+                imp_df['importance_mean'] = imp_df[fold_cols].astype(float).mean(axis=1)
+            else:
+                print("  ! importance_mean column missing and no fold columns available; using variance fallback.")
+                return []
+
+        # Sort by mean importance descending
+        imp_df = imp_df.sort_values('importance_mean', ascending=False)
+        candidates = imp_df['feature'].astype(str).tolist()
+
+        # Exclude previously engineered interactions to avoid recursive growth
+        disallowed_tokens = ('_X_', '_DIV_', '_PLUS_', '_MINUS_')
+        filtered = [
+            feat for feat in candidates
+            if feat not in ('cust_id', 'ref_date')
+            and not any(tok in feat for tok in disallowed_tokens)
+        ]
+        filtered = _safe_numeric_columns(filtered)
+        top_feats = filtered[:n]
+        if len(top_feats) < n:
+            print(f"  ! Only {len(top_feats)} of requested {n} features available after filtering.")
+        return top_feats
+
+    top_features = _load_top_features_from_importance(importance_path, top_n)
+
+    if len(top_features) < 2:
+        # Fallback: pick top-n by variance
+        numeric_cols = _safe_numeric_columns(X_train.columns)
+        variance_rank = (
+            X_train[numeric_cols].var(axis=0)
+            .sort_values(ascending=False)
+            .index.tolist()
+        )
+        top_features = [c for c in variance_rank if not any(tok in c for tok in ('_X_', '_DIV_', '_PLUS_', '_MINUS_'))][:top_n]
+        print(f"  ! Using variance-based top features for interactions: {top_features}")
+    else:
+        print(f"  Using feature importance from {importance_path}")
+        print(f"  Top features selected: {top_features}")
+
+    if len(top_features) < 2:
+        print("  ! Not enough features to create interactions; skipping.")
+        return X_train, X_test
+
+    existing_features = _safe_numeric_columns(top_features)
+
+    if len(existing_features) < 2:
+        print("  ! Insufficient numeric features available for interactions after filtering; skipping.")
+        return X_train, X_test
+
+    created_columns = []
     interaction_count = 0
 
-    # Create pairwise interactions
-    for i in range(len(existing_features)):
-        for j in range(i + 1, len(existing_features)):
-            feat1 = existing_features[i]
-            feat2 = existing_features[j]
+    def _safe_divide(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+        num = numerator.to_numpy(dtype=float, copy=False)
+        den = denominator.to_numpy(dtype=float, copy=False)
+        out = np.full_like(num, np.nan, dtype=float)
+        valid_mask = np.abs(den) > 1e-9
+        np.divide(num, den, out=out, where=valid_mask)
+        return pd.Series(out, index=numerator.index, dtype=float)
 
-            # Multiplication interaction: feat1 * feat2
-            interaction_name_mult = f"{feat1}_X_{feat2}"
-            X_train[interaction_name_mult] = X_train[feat1] * X_train[feat2]
-            X_test[interaction_name_mult] = X_test[feat1] * X_test[feat2]
-            interaction_count += 1
+    for feat1, feat2 in combinations(existing_features, 2):
+        # Multiplicative interaction
+        mult_name = f"{feat1}_X_{feat2}"
+        X_train[mult_name] = X_train[feat1] * X_train[feat2]
+        X_test[mult_name] = X_test[feat1] * X_test[feat2]
+        created_columns.append(mult_name)
+        interaction_count += 1
 
-            # Ratio interaction: feat1 / (feat2 + 1)
-            interaction_name_ratio1 = f"{feat1}_DIV_{feat2}"
-            X_train[interaction_name_ratio1] = X_train[feat1] / (X_train[feat2] + 1)
-            X_test[interaction_name_ratio1] = X_test[feat1] / (X_test[feat2] + 1)
-            interaction_count += 1
+        # Additive interaction
+        sum_name = f"{feat1}_PLUS_{feat2}"
+        X_train[sum_name] = X_train[feat1] + X_train[feat2]
+        X_test[sum_name] = X_test[feat1] + X_test[feat2]
+        created_columns.append(sum_name)
+        interaction_count += 1
 
-            # Ratio interaction: feat2 / (feat1 + 1)
-            interaction_name_ratio2 = f"{feat2}_DIV_{feat1}"
-            X_train[interaction_name_ratio2] = X_train[feat2] / (X_train[feat1] + 1)
-            X_test[interaction_name_ratio2] = X_test[feat2] / (X_test[feat1] + 1)
-            interaction_count += 1
+        # Difference interactions
+        diff_name_1 = f"{feat1}_MINUS_{feat2}"
+        diff_name_2 = f"{feat2}_MINUS_{feat1}"
+        X_train[diff_name_1] = X_train[feat1] - X_train[feat2]
+        X_test[diff_name_1] = X_test[feat1] - X_test[feat2]
+        X_train[diff_name_2] = X_train[feat2] - X_train[feat1]
+        X_test[diff_name_2] = X_test[feat2] - X_test[feat1]
+        created_columns.extend([diff_name_1, diff_name_2])
+        interaction_count += 2
 
-            print(f"  Created interactions for {feat1} x {feat2}")
+        # Ratio interactions (both directions)
+        ratio_name_1 = f"{feat1}_DIV_{feat2}"
+        ratio_name_2 = f"{feat2}_DIV_{feat1}"
+        X_train[ratio_name_1] = _safe_divide(X_train[feat1], X_train[feat2])
+        X_test[ratio_name_1] = _safe_divide(X_test[feat1], X_test[feat2])
+        X_train[ratio_name_2] = _safe_divide(X_train[feat2], X_train[feat1])
+        X_test[ratio_name_2] = _safe_divide(X_test[feat2], X_test[feat1])
+        created_columns.extend([ratio_name_1, ratio_name_2])
+        interaction_count += 2
 
-    # Handle any infinity values created by interactions
-    X_train = X_train.replace([np.inf, -np.inf], -999)
-    X_test = X_test.replace([np.inf, -np.inf], -999)
+        print(f"  Created interactions for {feat1} ↔ {feat2}")
+
+    if created_columns:
+        X_train[created_columns] = (
+            X_train[created_columns]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(-999)
+        )
+        X_test[created_columns] = (
+            X_test[created_columns]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(-999)
+        )
 
     print(f"\nTotal interactions created: {interaction_count}")
     print(f"New X_train shape: {X_train.shape}")
@@ -437,7 +541,12 @@ def add_feature_interactions(X_train, X_test):
 if getattr(args, 'no_interactions', False):
     print("\n-- Skipping feature interaction engineering due to --no-interactions --")
 else:
-    X_train, X_test = add_feature_interactions(X_train, X_test)
+    X_train, X_test = add_feature_interactions(
+        X_train,
+        X_test,
+        top_n=max(2, int(getattr(args, 'interaction_top_n', 8) or 8)),
+        importance_path=getattr(args, 'interaction_importance_path', None)
+    )
 
 # Update feature columns list to include all columns
 feature_cols = list(X_train.columns)

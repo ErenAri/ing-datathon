@@ -35,38 +35,44 @@ import argparse
 import pickle
 from sklearn.linear_model import ElasticNet
 
+try:
+    from src.models.modeling_pipeline import ing_hubs_datathon_metric, oof_composite_monthwise  # type: ignore
+except Exception:
+    ing_hubs_datathon_metric = None
+    oof_composite_monthwise = None
 
-def calculate_competition_metric(y_true, y_pred):
+
+def calculate_competition_metric(
+    y_true,
+    y_pred,
+    ref_dates: Optional[np.ndarray | pd.Series] = None,
+    last_n_months: int = 6,
+) -> float:
     """
-    Calculate the ING Datathon competition metric.
-
-    Metric: 40% Gini + 30% Recall@10% + 30% Lift@10%
-
-    Args:
-        y_true: True labels
-        y_pred: Predicted probabilities
-
-    Returns:
-        float: Competition metric score
+    Calculate the ING Datathon composite score, preferring the official helper when available.
     """
+    y_arr = np.asarray(y_true, dtype=float)
+    p_arr = np.asarray(y_pred, dtype=float)
+
+    if oof_composite_monthwise is not None and ref_dates is not None:
+        ref_ser = pd.to_datetime(pd.Series(ref_dates))
+        return float(oof_composite_monthwise(y_arr, p_arr, ref_dates=ref_ser, last_n_months=last_n_months))
+
+    if ing_hubs_datathon_metric is not None:
+        score, _ = ing_hubs_datathon_metric(y_arr, p_arr)
+        return float(score)
+
+    # Fallback: replicate composite using simple components
     from sklearn.metrics import roc_auc_score
 
-    # Gini coefficient (2*AUC - 1)
-    auc = roc_auc_score(y_true, y_pred)
+    auc = roc_auc_score(y_arr, p_arr)
     gini = 2 * auc - 1
-
-    # Recall@10%: What % of churners are in top 10% by score
-    n_top = int(len(y_pred) * 0.1)
-    top_indices = np.argsort(y_pred)[-n_top:]
-    recall_at_10 = y_true.iloc[top_indices].sum() / y_true.sum() if isinstance(y_true, pd.Series) else y_true[top_indices].sum() / y_true.sum()
-
-    # Lift@10%: (Recall@10%) / 0.10
-    lift_at_10 = recall_at_10 / 0.1
-
-    # Competition metric
-    score = 0.4 * gini + 0.3 * recall_at_10 + 0.3 * lift_at_10
-
-    return score
+    k = max(1, int(len(p_arr) * 0.10))
+    order = np.argsort(-p_arr)[:k]
+    positives = y_arr.sum() if y_arr.sum() > 0 else 1.0
+    recall_at_10 = y_arr[order].sum() / positives
+    lift_at_10 = recall_at_10 / 0.10
+    return float(0.4 * gini + 0.3 * recall_at_10 + 0.3 * lift_at_10)
 
 
 class SubmissionBlender:
@@ -106,6 +112,7 @@ class SubmissionBlender:
         self.blend_results = []
         self.cv_scores = {}
         self.test_predictions = {}
+        self.ref_dates = None
 
         print(f"\n{'='*80}")
         print(f"SUBMISSION BLENDER INITIALIZATION")
@@ -173,6 +180,18 @@ class SubmissionBlender:
 
         oof_files = sorted(self.oof_dir.glob(pattern))
 
+        # Attempt to load reference dates if not already set
+        if self.ref_dates is None:
+            for cand in ['ref_dates.pkl', os.path.join('data', 'processed', 'ref_dates.pkl')]:
+                if os.path.exists(cand):
+                    try:
+                        with open(cand, 'rb') as f:
+                            ref_obj = pickle.load(f)
+                        self.ref_dates = np.asarray(ref_obj)
+                        break
+                    except Exception:
+                        continue
+
         if not oof_files:
             print(f"No OOF files found matching pattern: {pattern}")
             return
@@ -194,7 +213,7 @@ class SubmissionBlender:
             print(f"\nCalculating individual model CV scores:")
             print(f"-" * 40)
             for model_name, oof_pred in self.oof_predictions.items():
-                cv_score = calculate_competition_metric(self.y_train, oof_pred)
+                cv_score = calculate_competition_metric(self.y_train, oof_pred, ref_dates=self.ref_dates)
                 self.cv_scores[model_name] = cv_score
                 print(f"  {model_name:20s}: {cv_score:.6f}")
 
@@ -232,6 +251,8 @@ class SubmissionBlender:
 
             if 'y_train' in bundle:
                 self.y_train = np.asarray(bundle['y_train']).astype(float)
+            if 'ref_dates' in bundle:
+                self.ref_dates = np.asarray(bundle['ref_dates'])
 
             for k, v in bundle.items():
                 if k.startswith('oof_') and k in key_map:
@@ -243,7 +264,7 @@ class SubmissionBlender:
                 print("\nCalculating individual model CV scores from bundle:")
                 print("-" * 40)
                 for model_name, oof_pred in self.oof_predictions.items():
-                    cv_score = calculate_competition_metric(self.y_train, oof_pred)
+                    cv_score = calculate_competition_metric(self.y_train, oof_pred, ref_dates=self.ref_dates)
                     self.cv_scores[model_name] = cv_score
                     print(f"  {model_name:20s}: {cv_score:.6f}")
 
@@ -280,7 +301,14 @@ class SubmissionBlender:
         keys = list(map(tuple, seg_df.fillna(-1).astype(int).values))
         return np.array(keys, dtype=object)
 
-    def _nnls_l2(self, X: np.ndarray, y: np.ndarray, l2: float, model_names: List[str]) -> np.ndarray:
+    def _nnls_l2(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        l2: float,
+        model_names: List[str],
+        ref_dates: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
         if X.ndim == 1:
             X = X.reshape(-1, 1)
         en = ElasticNet(alpha=l2, l1_ratio=0.0, fit_intercept=False, positive=True, max_iter=10000)
@@ -292,7 +320,14 @@ class SubmissionBlender:
         else:
             w = w / s
         pretty = ', '.join([f"{m}:{wt:.3f}" for m, wt in zip(model_names, w)])
-        print(f"    Weights -> {pretty}")
+        if ref_dates is not None:
+            try:
+                score = calculate_competition_metric(y, X @ w, ref_dates=ref_dates)
+                print(f"    Weights -> {pretty} | composite={score:.6f}")
+            except Exception:
+                print(f"    Weights -> {pretty}")
+        else:
+            print(f"    Weights -> {pretty}")
         return w
 
     def optimize_segmentwise(self,
@@ -315,11 +350,15 @@ class SubmissionBlender:
         oof_matrix = np.column_stack([self.oof_predictions[m] for m in model_names])
         test_matrix = np.column_stack([self.test_predictions[m] for m in model_names])
         y = np.asarray(self.y_train, dtype=float)
+        ref_dates_arr = np.asarray(self.ref_dates) if self.ref_dates is not None else None
         n = min(len(y), oof_matrix.shape[0])
         if n != len(y) or n != oof_matrix.shape[0]:
             print(f"⚠ Length mismatch: y={len(y)}, oof={oof_matrix.shape[0]} -> truncating to {n}")
             y = y[:n]
             oof_matrix = oof_matrix[:n]
+            if ref_dates_arr is not None:
+                ref_dates_arr = ref_dates_arr[:n]
+                self.ref_dates = ref_dates_arr
         # Load X_train for segments
         if x_train_path is None:
             x_train_path = 'X_train.pkl'
@@ -333,6 +372,9 @@ class SubmissionBlender:
             X_train_df = X_train_df.iloc[:m].reset_index(drop=True)
             y = y[:m]
             oof_matrix = oof_matrix[:m]
+            if ref_dates_arr is not None:
+                ref_dates_arr = ref_dates_arr[:m]
+                self.ref_dates = ref_dates_arr
         # Ensure segments
         X_train_df = self._ensure_segment_columns(X_train_df, segments)
         for s in segments:
@@ -357,11 +399,18 @@ class SubmissionBlender:
             print(f"  Segment {key} -> {n_seg} rows")
             X_seg = oof_matrix[idx_list]
             y_seg = y[idx_list]
-            w_seg = self._nnls_l2(X_seg, y_seg, l2=l2, model_names=model_names)
+            ref_seg = self.ref_dates[idx_list] if isinstance(self.ref_dates, (np.ndarray, list, pd.Series)) else None
+            w_seg = self._nnls_l2(X_seg, y_seg, l2=l2, model_names=model_names, ref_dates=ref_seg)
             per_segment_weights[str(key)] = w_seg.tolist()
             per_segment_counts[str(key)] = n_seg
         print("\nFitting global weights as fallback...")
-        w_global = self._nnls_l2(oof_matrix, y, l2=l2, model_names=model_names)
+        w_global = self._nnls_l2(
+            oof_matrix,
+            y,
+            l2=l2,
+            model_names=model_names,
+            ref_dates=self.ref_dates if isinstance(self.ref_dates, (np.ndarray, list, pd.Series)) else None,
+        )
         if len(per_segment_weights) > 0:
             total = sum(per_segment_counts.values())
             w_sum = np.zeros_like(w_global)
@@ -389,7 +438,7 @@ class SubmissionBlender:
         for g in gammas:
             z = logits(oof_blend) * g
             p = inv_logits(z)
-            sc = calculate_competition_metric(y, p)
+            sc = calculate_competition_metric(y, p, ref_dates=ref_dates_arr)
             if sc > best_score:
                 best_score = sc
                 best_gamma = float(g)
@@ -547,7 +596,7 @@ class SubmissionBlender:
                 else:
                     blended_oof = np.mean(oof_predictions ** power, axis=1) ** (1.0 / power)
 
-            cv_score = calculate_competition_metric(self.y_train, blended_oof)
+            cv_score = calculate_competition_metric(self.y_train, blended_oof, ref_dates=self.ref_dates)
 
         # For power mean, weights are not constant per model
         weights = {'power_mean': power}
@@ -589,7 +638,7 @@ class SubmissionBlender:
                 if name in self.oof_predictions
             ])
             blended_oof = np.median(oof_predictions, axis=1)
-            cv_score = calculate_competition_metric(self.y_train, blended_oof)
+            cv_score = calculate_competition_metric(self.y_train, blended_oof, ref_dates=self.ref_dates)
         # For typing consistency, return equal numeric weights summary
         weights = {name: 1.0 / len(self.submissions) for name in self.submissions.keys()}
 
@@ -762,7 +811,7 @@ class SubmissionBlender:
             blended_oof = oof_matrix @ weights
 
             # Calculate CV score (negate for minimization)
-            score = calculate_competition_metric(self.y_train, blended_oof)
+            score = calculate_competition_metric(self.y_train, blended_oof, ref_dates=self.ref_dates)
             return -score
 
         results = []
