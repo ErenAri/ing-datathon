@@ -43,16 +43,16 @@ def validate_input_files():
     for file in required_files:
         if os.path.exists(file):
             file_size = os.path.getsize(file) / (1024 * 1024)  # Size in MB
-            print(f"  ✓ {file:<35} ({file_size:.2f} MB)")
+            print(f"  [OK] {file:<35} ({file_size:.2f} MB)")
         else:
-            print(f"  ✗ {file:<35} MISSING")
+            print(f"  [FAIL] {file:<35} MISSING")
             missing_files.append(file)
 
     if missing_files:
         print(f"\n❌ ERROR: Missing {len(missing_files)} required file(s)")
         return False
 
-    print(f"\n✓ All {len(required_files)} required files found")
+    print(f"\n[OK] All {len(required_files)} required files found")
     return True
 
 
@@ -65,7 +65,7 @@ def run_main_pipeline():
         import src.main as main
 
         # Main script runs automatically on import
-        print("\n✓ Pipeline executed successfully")
+        print("\n[OK] Pipeline executed successfully")
 
         return {
             'success': True,
@@ -105,7 +105,7 @@ def validate_submission():
         # Check for missing values
         if submission.isnull().any().any():
             null_counts = submission.isnull().sum()
-            print(f"  ⚠️  Warning: Found null values:")
+            print(f"  [WARN]️  Warning: Found null values:")
             for col, count in null_counts[null_counts > 0].items():
                 print(f"      {col}: {count} nulls")
             return False
@@ -115,14 +115,14 @@ def validate_submission():
         churn_max = submission['churn'].max()
 
         if churn_min < 0 or churn_max > 1:
-            print(f"  ⚠️  Warning: Predictions outside [0, 1] range")
+            print(f"  [WARN]️  Warning: Predictions outside [0, 1] range")
             print(f"      Range: [{churn_min:.4f}, {churn_max:.4f}]")
 
         # Validation passed
-        print(f"  ✓ File structure valid")
-        print(f"  ✓ Shape: {submission.shape}")
-        print(f"  ✓ No missing values")
-        print(f"  ✓ Prediction range: [{churn_min:.6f}, {churn_max:.6f}]")
+        print(f"  [OK] File structure valid")
+        print(f"  [OK] Shape: {submission.shape}")
+        print(f"  [OK] No missing values")
+        print(f"  [OK] Prediction range: [{churn_min:.6f}, {churn_max:.6f}]")
 
         return True, submission
 
@@ -166,9 +166,9 @@ def show_output_files():
         if os.path.exists(file):
             file_size = os.path.getsize(file) / 1024  # Size in KB
             mod_time = datetime.fromtimestamp(os.path.getmtime(file))
-            print(f"  ✓ {file:<30} {file_size:>8.2f} KB  [{mod_time.strftime('%Y-%m-%d %H:%M:%S')}]")
+            print(f"  [OK] {file:<30} {file_size:>8.2f} KB  [{mod_time.strftime('%Y-%m-%d %H:%M:%S')}]")
         else:
-            print(f"  ✗ {file:<30} NOT CREATED")
+            print(f"  [FAIL] {file:<30} NOT CREATED")
 
 
 def show_feature_importance(top_n=15):
@@ -195,7 +195,7 @@ def show_feature_importance(top_n=15):
             print(f"  {idx:<6} {feat_name:<50} {importance:>10.2f} {bar}")
 
     except Exception as e:
-        print(f"  ⚠️  Could not load feature importance: {str(e)}")
+        print(f"  [WARN]️  Could not load feature importance: {str(e)}")
 
 
 def print_final_summary():
@@ -281,7 +281,7 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\n⚠️  Execution interrupted by user")
+        print("\n\n[WARN]️  Execution interrupted by user")
         sys.exit(1)
     except Exception as e:
         print(f"\n\n❌ FATAL ERROR: {str(e)}")

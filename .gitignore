@@ -77,3 +77,7 @@ schedule_day1.txt
 # Temp files
 *.tmp
 *.bak
+
+# Archive folders (development artifacts)
+archive_docs/
+archive_scripts/

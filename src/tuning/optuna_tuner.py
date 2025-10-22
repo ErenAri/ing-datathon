@@ -208,7 +208,7 @@ def save_best(model_kind: str, study: optuna.Study):
         current = {}
     current[model_kind] = study.best_trial.user_attrs['params']
     tuned_path.write_text(json.dumps(current, indent=2))
-    print(f"✓ Saved best {model_kind} params to {tuned_path}")
+    print(f"[OK] Saved best {model_kind} params to {tuned_path}")
 
     # Also update models/optimized_params.py and root optimized_params.py for main pipeline compatibility
     for target in [MODELS / 'optimized_params.py', ROOT / 'optimized_params.py']:
@@ -217,9 +217,9 @@ def save_best(model_kind: str, study: optuna.Study):
             for k, v in current.items():
                 lines.append(f"{k.upper()}_BEST = {json.dumps(v, indent=2)}\n")
             target.write_text("".join(lines))
-            print(f"✓ Updated {target}")
+            print(f"[OK] Updated {target}")
         except Exception as e:
-            print(f"⚠ Failed to update {target}: {e}")
+            print(f"[WARN] Failed to update {target}: {e}")
 
 
 def main():

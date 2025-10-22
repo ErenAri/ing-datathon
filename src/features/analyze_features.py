@@ -70,7 +70,7 @@ class FeatureAnalyzer:
         self.importance_files = sorted(dir_path.glob(pattern))
 
         if not self.importance_files:
-            print(f"⚠ No feature importance files found matching pattern: {pattern}")
+            print(f"[WARN] No feature importance files found matching pattern: {pattern}")
             return
 
         print(f"\n{'='*80}")
@@ -83,7 +83,7 @@ class FeatureAnalyzer:
 
                 # Validate columns
                 if 'feature' not in df.columns or 'importance' not in df.columns:
-                    print(f"  ⚠ Skipping {file_path.name}: Missing required columns")
+                    print(f"  [WARN] Skipping {file_path.name}: Missing required columns")
                     continue
 
                 # Add metadata
@@ -91,7 +91,7 @@ class FeatureAnalyzer:
                 df['model_name'] = self._extract_model_name(file_path.name)
 
                 self.importance_data.append(df)
-                print(f"  ✓ Loaded {file_path.name}: {len(df)} features")
+                print(f"  [OK] Loaded {file_path.name}: {len(df)} features")
 
             except Exception as e:
                 print(f"  ❌ Error loading {file_path.name}: {str(e)}")
@@ -347,7 +347,7 @@ class FeatureAnalyzer:
             X_train: Training feature DataFrame
         """
         self.X_train = X_train
-        print(f"✓ Training data loaded: {X_train.shape}")
+        print(f"[OK] Training data loaded: {X_train.shape}")
 
     def calculate_correlation_matrix(self,
                                     top_n: int = 50,
@@ -363,11 +363,11 @@ class FeatureAnalyzer:
             Correlation matrix DataFrame
         """
         if self.X_train is None:
-            print("⚠ Training data not loaded. Call load_training_data() first.")
+            print("[WARN] Training data not loaded. Call load_training_data() first.")
             return pd.DataFrame()
 
         if self.feature_importance_agg is None:
-            print("⚠ No aggregated importance. Call aggregate_importance() first.")
+            print("[WARN] No aggregated importance. Call aggregate_importance() first.")
             return pd.DataFrame()
 
         print(f"\n{'='*80}")
@@ -389,7 +389,7 @@ class FeatureAnalyzer:
         X_subset = self.X_train[available_features]
         self.correlation_matrix = X_subset.corr(method=method)
 
-        print(f"✓ Correlation matrix calculated: {self.correlation_matrix.shape}")
+        print(f"[OK] Correlation matrix calculated: {self.correlation_matrix.shape}")
         print(f"\n{'='*80}\n")
 
         return self.correlation_matrix
@@ -405,7 +405,7 @@ class FeatureAnalyzer:
             List of (feature1, feature2, correlation) tuples
         """
         if self.correlation_matrix is None:
-            print("⚠ Correlation matrix not calculated. Call calculate_correlation_matrix() first.")
+            print("[WARN] Correlation matrix not calculated. Call calculate_correlation_matrix() first.")
             return []
 
         print(f"\n{'='*80}")
@@ -462,7 +462,7 @@ class FeatureAnalyzer:
             List of features recommended for removal
         """
         if self.feature_importance_agg is None:
-            print("⚠ No aggregated importance. Call aggregate_importance() first.")
+            print("[WARN] No aggregated importance. Call aggregate_importance() first.")
             return []
 
         print(f"\n{'='*80}")
@@ -530,7 +530,7 @@ class FeatureAnalyzer:
             List of (feature1, feature2) tuples for new interactions
         """
         if self.feature_importance_agg is None:
-            print("⚠ No aggregated importance. Call aggregate_importance() first.")
+            print("[WARN] No aggregated importance. Call aggregate_importance() first.")
             return []
 
         print(f"\n{'='*80}")
@@ -656,8 +656,8 @@ class FeatureAnalyzer:
         print(f"3. ACTION ITEMS")
         print(f"{'='*80}\n")
 
-        print(f"✓ Keep: {len(recommendations.get('keep_features', []))} most important features")
-        print(f"✗ Remove: {len(recommendations.get('remove_features', []))} redundant/low-importance features")
+        print(f"[OK] Keep: {len(recommendations.get('keep_features', []))} most important features")
+        print(f"[FAIL] Remove: {len(recommendations.get('remove_features', []))} redundant/low-importance features")
         print(f"+ Try: {len(recommendations.get('new_interactions', []))} new feature interactions")
 
         print(f"\n{'#'*80}")
@@ -682,7 +682,7 @@ class FeatureAnalyzer:
             return
 
         if self.feature_importance_agg is None:
-            print("⚠ No aggregated importance. Call aggregate_importance() first.")
+            print("[WARN] No aggregated importance. Call aggregate_importance() first.")
             return
 
         print(f"\nGenerating feature importance visualization...")
@@ -712,7 +712,7 @@ class FeatureAnalyzer:
 
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"✓ Feature importance plot saved to: {save_path}")
+            print(f"[OK] Feature importance plot saved to: {save_path}")
 
         plt.show()
 
@@ -734,7 +734,7 @@ class FeatureAnalyzer:
             return
 
         if self.correlation_matrix is None:
-            print("⚠ Correlation matrix not calculated. Call calculate_correlation_matrix() first.")
+            print("[WARN] Correlation matrix not calculated. Call calculate_correlation_matrix() first.")
             return
 
         print(f"\nGenerating correlation heatmap...")
@@ -763,7 +763,7 @@ class FeatureAnalyzer:
 
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"✓ Correlation heatmap saved to: {save_path}")
+            print(f"[OK] Correlation heatmap saved to: {save_path}")
 
         plt.show()
 
@@ -782,7 +782,7 @@ class FeatureAnalyzer:
             return
 
         if self.feature_importance_agg is None or not self.feature_categories:
-            print("⚠ Need aggregated importance and categories. Call aggregate_importance() and categorize_features().")
+            print("[WARN] Need aggregated importance and categories. Call aggregate_importance() and categorize_features().")
             return
 
         print(f"\nGenerating category importance visualization...")
@@ -832,7 +832,7 @@ class FeatureAnalyzer:
 
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"✓ Category importance plot saved to: {save_path}")
+            print(f"[OK] Category importance plot saved to: {save_path}")
 
         plt.show()
 
@@ -859,7 +859,7 @@ class FeatureAnalyzer:
         with open(output_file, 'w') as f:
             json.dump(json_recommendations, f, indent=2)
 
-        print(f"✓ Recommendations exported to: {output_file}")
+        print(f"[OK] Recommendations exported to: {output_file}")
 
 
 def main():

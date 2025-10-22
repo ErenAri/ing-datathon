@@ -494,7 +494,7 @@ class HyperparameterOptimizer:
                 f.write('# or\n')
                 f.write('# model = xgb.XGBClassifier(**OPTIMIZED_XGB_PARAMS)\n')
 
-            print(f"✓ Parameters saved to: {filename}")
+            print(f"[OK] Parameters saved to: {filename}")
             print("="*60)
 
         except Exception as e:
@@ -535,7 +535,7 @@ class HyperparameterOptimizer:
 
             plt.tight_layout()
             plt.savefig('optimization_history.png', dpi=300, bbox_inches='tight')
-            print("\n✓ Optimization history plot saved to: optimization_history.png")
+            print("\n[OK] Optimization history plot saved to: optimization_history.png")
 
         except ImportError:
             print("\nNote: matplotlib not available for plotting")
@@ -566,8 +566,8 @@ def main():
         with open('y_train.pkl', 'rb') as f:
             y_train = pickle.load(f)
 
-        print(f"✓ Loaded X_train: {X_train.shape}")
-        print(f"✓ Loaded y_train: {len(y_train)}")
+        print(f"[OK] Loaded X_train: {X_train.shape}")
+        print(f"[OK] Loaded y_train: {len(y_train)}")
 
         # Initialize optimizer
         optimizer = HyperparameterOptimizer(X_train, y_train, n_folds=5)

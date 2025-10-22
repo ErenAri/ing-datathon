@@ -22,11 +22,11 @@ try:
     from optimized_params import LGB_BEST, XGB_BEST
     OPT_AVAILABLE = True
     USE_OPTIMIZED_PARAMS = True
-    print("✓ Loaded Optuna-optimized hyperparameters")
+    print("[ OK ] Loaded Optuna-optimized hyperparameters")
 except ImportError:
     OPT_AVAILABLE = False
     USE_OPTIMIZED_PARAMS = False
-    print("⚠ optimized_params.py not found - using default parameters")
+    print("[WARN] optimized_params.py not found - using default parameters")
     print("  Run hyperparameter_optimizer.py first to generate optimized parameters")
 
 # ============================================================================
@@ -68,7 +68,7 @@ parser.add_argument('--interaction-importance-path', type=str,
                     default=os.path.join('outputs', 'reports', 'feature_importance.csv'),
                     help='Path to feature importance CSV used to select features for interactions')
 parser.add_argument('--iter-adv', action='store_true',
-                    help='Enable iterative adversarial filtering loop to push domain AUC ≤ target before modeling')
+                    help='Enable iterative adversarial filtering loop to push domain AUC <= target before modeling')
 parser.add_argument('--iter-adv-k', type=int, default=5,
                     help='Number of top drift features to try dropping each step (K); halves if OOF drop too high')
 parser.add_argument('--iter-adv-target', type=float, default=0.75,
@@ -87,7 +87,7 @@ print("Loading data...")
 # Apply CLI overrides and compatibility mappings
 if args.use_optimized_params is not None:
     if args.use_optimized_params and not OPT_AVAILABLE:
-        print("⚠ --use-optimized-params set but optimized_params.py not available; continuing with defaults")
+        print("[WARN] --use-optimized-params set but optimized_params.py not available; continuing with defaults")
         USE_OPTIMIZED_PARAMS = False
     else:
         USE_OPTIMIZED_PARAMS = bool(args.use_optimized_params)
@@ -327,7 +327,7 @@ if args.adv_filter:
             after = float(_after) if isinstance(_after, (int, float, np.floating)) else float('nan')
             _dropped = adv_res.get('dropped_features', [])
             dropped = list(_dropped) if isinstance(_dropped, (list, tuple, pd.Series, np.ndarray)) else []
-            print(f"[ADV] Domain AUC: {before:.3f} → {after:.3f}; dropped={len(dropped)}")
+            print(f"[ADV] Domain AUC: {before:.3f} -> {after:.3f}; dropped={len(dropped)}")
             try:
                 adv_pre_before = float(before)
             except Exception:
@@ -517,7 +517,7 @@ def add_feature_interactions(X_train, X_test, *, top_n=8, importance_path=None):
         created_columns.extend([ratio_name_1, ratio_name_2])
         interaction_count += 2
 
-        print(f"  Created interactions for {feat1} ↔ {feat2}")
+        print(f"  Created interactions for {feat1} <-> {feat2}")
 
     if created_columns:
         X_train[created_columns] = (
@@ -572,7 +572,7 @@ except RuntimeError as e:
 # Optional: Iterative adversarial feature dropping to reach target domain AUC
 if getattr(args, 'iter_adv', False):
     print("\n" + "="*60)
-    print("ITERATIVE ADVERSARIAL FILTERING (push domain AUC ≤ target)")
+    print("ITERATIVE ADVERSARIAL FILTERING (push domain AUC <= target)")
     print("="*60)
     try:
         from src.features.adversarial_validate import iterative_adversarial_filter as _iter_adv
@@ -619,7 +619,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score as _roc_auc
 
 print("\n" + "="*60)
-print("COMPUTING DOMAIN WEIGHTS (train≈test) ON FINAL FEATURES")
+print("COMPUTING DOMAIN WEIGHTS (train~test) ON FINAL FEATURES")
 print("="*60)
 
 # Ensure ref_date alignment and year split (train_data aligns with X_train rows)
@@ -697,7 +697,7 @@ if args.adv_filter:
     else:
         _p2 = np.asarray(m1.predict(X_vad), dtype=float)
         auc_after = _roc_auc(y_vad, _p2)  # type: ignore[arg-type]
-    print(f"Domain AUC AFTER filtering:  {auc_after:.4f} (target ≤ {args.adv_auc_thresh:.2f})")
+    print(f"Domain AUC AFTER filtering:  {auc_after:.4f} (target <= {args.adv_auc_thresh:.2f})")
     try:
         adv_post_after = float(auc_after)
     except Exception:
@@ -944,7 +944,7 @@ if args.with_ftt and ('ftt' in args.models):
         _print_monthwise_metrics("FT-Transformer", y_train, oof_ftt, train_data['ref_date'], last_n=LN)
         ftt_ok = True
     except Exception as _e:
-        print(f"⚠ FT-Transformer training failed or unavailable: {_e}")
+        print(f"[WARN] FT-Transformer training failed or unavailable: {_e}")
         oof_ftt = None
         test_pred_ftt = None
         ftt_ok = False
@@ -958,7 +958,7 @@ else:
 # ============================================================================
 
 print("\n" + "="*60)
-print("TRAINING TWO-STAGE HEAD (Stage-A recall → Stage-B refine)")
+print("TRAINING TWO-STAGE HEAD (Stage-A recall -> Stage-B refine)")
 print("="*60)
 
 if 'two' in args.models:
@@ -1132,7 +1132,26 @@ if sum_w > 0:
     for n in list(final_weights.keys()):
         final_weights[n] = final_weights[n] / sum_w
 
-print("\nAggregated blend weights (sum≈1):")
+# OVERRIDE: Use fixed baseline weights (ensemble optimizer is unstable)
+# These are the proven weights from baseline that achieved 1.22048
+USE_FIXED_WEIGHTS = True  # Set to False to use optimizer
+if USE_FIXED_WEIGHTS:
+    print("\n[OVERRIDE] Using FIXED baseline weights (optimizer disabled)")
+    baseline_weights = {
+        'cat': 0.3884,
+        'two_stageB': 0.2821,
+        'xgb': 0.1173,
+        'lgb': 0.1097,
+        'meta': 0.1025
+    }
+    # Only use weights for models that exist
+    final_weights = {n: baseline_weights.get(n, 0.0) for n in names}
+    # Renormalize in case some models are missing
+    sum_w = sum(final_weights.values())
+    if sum_w > 0:
+        final_weights = {n: w/sum_w for n, w in final_weights.items()}
+
+print("\nAggregated blend weights (sum~1):")
 for n in names:
     print(f"  {n}: {final_weights[n]:.3f}")
 
@@ -1173,12 +1192,12 @@ test_pred_meta = None
 # LightGBM predictions
 if 'lgb' in models_oof:
     test_pred_lgb = pipeline_lgb.predict(X_test)
-    print(f"✓ LightGBM predictions complete")
+    print(f"[OK] LightGBM predictions complete")
 
 if 'xgb' in models_oof and xgb_models:
     # XGBoost predictions
     test_pred_xgb = np.mean([m.predict_proba(X_test)[:, 1] for m in xgb_models], axis=0)
-    print(f"✓ XGBoost predictions complete")
+    print(f"[OK] XGBoost predictions complete")
 
 # CatBoost predictions (optional)
 cat_ok = False
@@ -1201,20 +1220,20 @@ if 'cat' in models_oof and cat_models:
                 test_pred_cat = avg_rank
         if test_pred_cat is not None:
             cat_ok = True
-            print(f"✓ CatBoost predictions complete (rank-averaged; seeds={args.cat_seeds})")
+            print(f"[OK] CatBoost predictions complete (rank-averaged; seeds={args.cat_seeds})")
         else:
             test_pred_cat = None
             cat_ok = False
-            print(f"⚠ CatBoost models empty; continuing without cat in blend")
+            print(f"[WARN] CatBoost models empty; continuing without cat in blend")
     except Exception:
         test_pred_cat = None
         cat_ok = False
-        print(f"⚠ CatBoost predictions unavailable; continuing without cat in blend")
+        print(f"[WARN] CatBoost predictions unavailable; continuing without cat in blend")
 
 if 'two_stageB' in models_oof:
     # Two-Stage head predictions
     test_pred_two_stage, test_pred_two_stage_A = pipeline_lgb.predict_two_stage(X_test)
-    print(f"✓ Two-Stage head predictions complete")
+    print(f"[OK] Two-Stage head predictions complete")
 
 # Level-2 stacker predictions (optional)
 if lr_meta_model is not None:
@@ -1231,7 +1250,7 @@ if lr_meta_model is not None:
     if len(_meta_cols) == len(_stack_order) and len(_meta_cols) > 0:
         _X_meta_test = np.vstack(_meta_cols).T
         test_pred_meta = lr_meta_model.predict_proba(_X_meta_test)[:, 1].astype(float)
-        print("✓ Robust stacker predictions complete")
+        print("[OK] Robust stacker predictions complete")
         try:
             import pandas as _pd
             os.makedirs(os.path.join('outputs', 'test_preds'), exist_ok=True)
@@ -1268,7 +1287,7 @@ for n, w in final_weights.items():
         test_pred_ensemble = test_pred_ensemble + w * test_pred_meta
     elif n == 'ftt' and (test_pred_ftt is not None):
         test_pred_ensemble = test_pred_ensemble + w * test_pred_ftt
-print(f"\n✓ Blended ensemble predictions complete")
+print(f"\n[OK] Blended ensemble predictions complete")
 
 # ============================================================================
 # STEP 7.1: ADVANCED PROBABILITY CALIBRATION (modular)
@@ -1281,10 +1300,19 @@ print("="*60)
 from src.utils.calibration import CalibrationConfig, kfold_calibrate_with_gamma
 
 seg_values = None
-if 'tenure' in train_data.columns:
-    seg_values = np.asarray(train_data['tenure'].values, dtype=float)
+segment_column = None
 
-cfg_cal = CalibrationConfig(segment_col='tenure' if seg_values is not None else None,
+# Try RFM segment first (more granular for churn), fallback to tenure
+if 'rfm_segment_encoded' in train_data.columns:
+    seg_values = np.asarray(train_data['rfm_segment_encoded'].values, dtype=float)
+    segment_column = 'rfm_segment_encoded'
+    print("  Using RFM segment for calibration")
+elif 'tenure' in train_data.columns:
+    seg_values = np.asarray(train_data['tenure'].values, dtype=float)
+    segment_column = 'tenure'
+    print("  Using tenure for calibration")
+
+cfg_cal = CalibrationConfig(segment_col=segment_column,
                             gamma_grid=_CALIB_GAMMA_GRID)
 
 # Apply repaired K-fold calibration only if it improves OOF
@@ -1487,9 +1515,9 @@ try:
     bundle_path = os.path.join('outputs', 'predictions', 'predictions_bundle.pkl')
     with open(bundle_path, 'wb') as _f:
         _pkl.dump(bundle, _f)
-    print(f"✓ Saved {bundle_path}")
+    print(f"[OK] Saved {bundle_path}")
 except Exception as e:
-    print(f"⚠ Could not export predictions bundle: {e}")
+    print(f"[WARN] Could not export predictions bundle: {e}")
 
 # ============================================================================
 # STEP 9: FEATURE IMPORTANCE ANALYSIS
@@ -1627,7 +1655,7 @@ try:
             except Exception:
                 return "n/a"
         if bool(getattr(args, 'adv_filter', False)):
-            print(f"- Domain AUC (train vs test): pre-interactions {_fmt(adv_pre_before)} → {_fmt(adv_pre_after)}; post-filter {_fmt(adv_post_before)} → {_fmt(adv_post_after)}")
+            print(f"- Domain AUC (train vs test): pre-interactions {_fmt(adv_pre_before)} -> {_fmt(adv_pre_after)}; post-filter {_fmt(adv_post_before)} -> {_fmt(adv_post_after)}")
         if domain_auc_summary is not None:
             print(f"- Domain AUC (final features): {_fmt(domain_auc_summary)}")
 

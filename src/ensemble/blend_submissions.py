@@ -150,11 +150,11 @@ class SubmissionBlender:
 
             # Validate format (should have cust_id and target columns)
             if 'cust_id' not in df.columns or 'target' not in df.columns:
-                print(f"  ⚠ Skipping {file_path.name}: Missing required columns")
+                print(f"  [WARN] Skipping {file_path.name}: Missing required columns")
                 continue
 
             self.submissions[model_name] = df
-            print(f"  ✓ Loaded {model_name}: {len(df)} predictions")
+            print(f"  [OK] Loaded {model_name}: {len(df)} predictions")
 
         print(f"\nTotal submissions loaded: {len(self.submissions)}")
         print(f"{'='*80}\n")
@@ -204,7 +204,7 @@ class SubmissionBlender:
             oof_pred = np.load(file_path)
 
             self.oof_predictions[model_name] = oof_pred
-            print(f"  ✓ Loaded {model_name}: {len(oof_pred)} OOF predictions")
+            print(f"  [OK] Loaded {model_name}: {len(oof_pred)} OOF predictions")
 
         print(f"\nTotal OOF predictions loaded: {len(self.oof_predictions)}")
 
@@ -268,7 +268,7 @@ class SubmissionBlender:
                     self.cv_scores[model_name] = cv_score
                     print(f"  {model_name:20s}: {cv_score:.6f}")
 
-            print("\n✓ Loaded predictions bundle and populated OOF/test maps.")
+            print("\n[OK] Loaded predictions bundle and populated OOF/test maps.")
         except Exception as e:
             print(f"Failed to load bundle: {e}")
 
@@ -353,7 +353,7 @@ class SubmissionBlender:
         ref_dates_arr = np.asarray(self.ref_dates) if self.ref_dates is not None else None
         n = min(len(y), oof_matrix.shape[0])
         if n != len(y) or n != oof_matrix.shape[0]:
-            print(f"⚠ Length mismatch: y={len(y)}, oof={oof_matrix.shape[0]} -> truncating to {n}")
+            print(f"[WARN] Length mismatch: y={len(y)}, oof={oof_matrix.shape[0]} -> truncating to {n}")
             y = y[:n]
             oof_matrix = oof_matrix[:n]
             if ref_dates_arr is not None:
@@ -367,7 +367,7 @@ class SubmissionBlender:
         with open(x_train_path, 'rb') as f:
             X_train_df = pickle.load(f)
         if len(X_train_df) != len(y):
-            print(f"⚠ X_train rows ({len(X_train_df)}) != y_train ({len(y)}). Attempting to align by truncation.")
+            print(f"[WARN] X_train rows ({len(X_train_df)}) != y_train ({len(y)}). Attempting to align by truncation.")
             m = min(len(X_train_df), len(y))
             X_train_df = X_train_df.iloc[:m].reset_index(drop=True)
             y = y[:m]
@@ -514,7 +514,7 @@ class SubmissionBlender:
             Tuple of (blended_submission, weights_dict, cv_score)
         """
         if not self.cv_scores:
-            print("⚠ CV scores not available. Using equal weights instead.")
+            print("[WARN] CV scores not available. Using equal weights instead.")
             return self.create_equal_weight_blend()
 
         # Sort models by CV score (descending)
@@ -781,7 +781,7 @@ class SubmissionBlender:
             List of top blend results sorted by CV score
         """
         if not self.oof_predictions or self.y_train is None:
-            print("⚠ OOF predictions not available. Cannot run hill climbing.")
+            print("[WARN] OOF predictions not available. Cannot run hill climbing.")
             return []
 
         print(f"\n{'='*80}")
@@ -1076,7 +1076,7 @@ class SubmissionBlender:
                 'weights': json.dumps(weights, indent=2)
             })
 
-            print(f"  ✓ Rank {rank}: {filename}")
+            print(f"  [OK] Rank {rank}: {filename}")
 
         # Save summary
         summary_df = pd.DataFrame(summary_data)
@@ -1104,8 +1104,8 @@ class SubmissionBlender:
                         f.write(f"    {model_name:20s}: {weight}\n")
                 f.write("\n")
 
-        print(f"\n  ✓ Summary saved to: {summary_path}")
-        print(f"  ✓ Detailed summary saved to: {detailed_summary_path}")
+        print(f"\n  [OK] Summary saved to: {summary_path}")
+        print(f"  [OK] Detailed summary saved to: {detailed_summary_path}")
         print(f"{'='*80}\n")
 
 

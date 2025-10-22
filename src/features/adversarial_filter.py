@@ -253,7 +253,7 @@ def main():
     X_train_f = X_train.drop(columns=drop_cols, errors='ignore')
     X_test_f = X_test.drop(columns=drop_cols, errors='ignore')
 
-    # Compute simple domain weights (train≈test): inverse of domain prob, clipped
+    # Compute simple domain weights (train~test): inverse of domain prob, clipped
     # Fit a fresh small model on filtered features
     y_dom_train = np.concatenate([np.ones(len(X_train_f), dtype=int), np.zeros(len(X_test_f), dtype=int)])
     X_dom_f = pd.concat([X_train_f, X_test_f], axis=0, ignore_index=True)

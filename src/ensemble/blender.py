@@ -325,7 +325,7 @@ def optimize_weights_per_month(
                 detail = f" ({item['detail']})" if item.get("detail") else ""
                 print(f"  - {item['strategy']}{detail}: {item['composite']:.6f}")
     except Exception as exc:
-        print(f"⚠ Baseline blend comparison failed: {exc}")
+        print(f"[WARN] Baseline blend comparison failed: {exc}")
         baselines = []
 
     return {

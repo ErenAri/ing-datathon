@@ -14,9 +14,10 @@ Method = Literal['isotonic', 'beta']
 @dataclass
 class CalibrationConfig:
     n_folds: int = 5
-    segment_col: Optional[str] = None  # e.g., 'tenure'
+    segment_col: Optional[str] = None  # e.g., 'tenure', 'rfm_segment_encoded'
     min_segment_rows: int = 2000
-    gamma_grid: Tuple[float, ...] = (0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20)
+    # Extended gamma grid for more aggressive top-decile emphasis (1.15-1.30)
+    gamma_grid: Tuple[float, ...] = (0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30)
     eps: float = 1e-6
     raw_blend: float = 0.2
 

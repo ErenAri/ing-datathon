@@ -88,7 +88,7 @@ def iterative_adversarial_filter(
     max_oof_drop: float = 0.02,
     seed: int = 42,
 ) -> Dict[str, Any]:
-    """Iteratively drop top drift features to push domain AUC ≤ target.
+    """Iteratively drop top drift features to push domain AUC <= target.
 
     Allows month-wise composite to degrade by up to max_oof_drop from the best-so-far baseline.
 
@@ -160,7 +160,7 @@ def iterative_adversarial_filter(
         print(f"[IterADV] Step {step}: domain AUC={dom_auc:.4f} | keep_features={len(keep_cols)}")
         history.append({'step': step, 'domain_auc': float(dom_auc), 'oof_composite': float(best_score), 'dropped': []})
         if dom_auc <= float(target_auc):
-            print(f"[IterADV] Target achieved: domain AUC ≤ {target_auc:.3f}")
+            print(f"[IterADV] Target achieved: domain AUC <= {target_auc:.3f}")
             break
 
         # Propose dropping top-K not yet dropped
@@ -178,7 +178,7 @@ def iterative_adversarial_filter(
             oof_trial, score_trial = pipe.train_lightgbm(pd.DataFrame(X_tr[trial_cols]), y_train, params=None, ref_dates=ref_dates, last_n_months=last_n, sample_weight=None)
             score_trial = float(score_trial)
             delta = score_trial - best_score
-            print(f"[IterADV] Try drop K={K}: Δoof={delta:+.6f} (allow ≥ {-float(max_oof_drop):.6f})")
+            print(f"[IterADV] Try drop K={K}: Δoof={delta:+.6f} (allow >= {-float(max_oof_drop):.6f})")
             if delta >= -float(max_oof_drop):
                 # Accept drop
                 keep_cols = trial_cols

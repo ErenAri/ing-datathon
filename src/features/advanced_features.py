@@ -409,7 +409,7 @@ class AdvancedFeatureEngineering:
         # Handle missing values
         rfm_df = rfm_df.fillna(-999)
 
-        print(f"    ✓ Created {len(rfm_df.columns)} RFM features")
+        print(f"    [OK] Created {len(rfm_df.columns)} RFM features")
 
         return rfm_df
 
@@ -609,7 +609,7 @@ class AdvancedFeatureEngineering:
         # Handle missing values
         change_df = change_df.fillna(-999)
 
-        print(f"    ✓ Created {len(change_df.columns)} behavioral change features")
+        print(f"    [OK] Created {len(change_df.columns)} behavioral change features")
 
         return change_df
 
@@ -766,7 +766,7 @@ class AdvancedFeatureEngineering:
         # Handle missing values
         lifecycle_df = lifecycle_df.fillna(-999)
 
-        print(f"    ✓ Created {len(lifecycle_df.columns)} lifecycle features")
+        print(f"    [OK] Created {len(lifecycle_df.columns)} lifecycle features")
 
         return lifecycle_df
 
@@ -924,9 +924,260 @@ class AdvancedFeatureEngineering:
         # Handle missing values
         time_df = time_df.fillna(-999)
 
-        print(f"    ✓ Created {len(time_df.columns)} time-based features")
+        print(f"    [OK] Created {len(time_df.columns)} time-based features")
 
         return time_df
+
+    def create_churn_risk_features(self, history_df, customers_df, ref_date):
+        """
+        Create churn risk-specific features targeting top-decile prediction
+
+        These features focus on strong churn signals:
+        - Spending decline patterns
+        - Engagement drops
+        - Product abandonment
+        - Balance decline velocity
+
+        Parameters:
+        -----------
+        history_df : pd.DataFrame
+            Customer transaction history
+        customers_df : pd.DataFrame
+            Customer demographic data
+        ref_date : str
+            Reference date for feature calculation
+
+        Returns:
+        --------
+        pd.DataFrame : Churn risk features
+        """
+        print("  Creating churn risk features...")
+
+        ref_date = pd.to_datetime(ref_date)
+        history_df = history_df.copy()
+        history_df['date'] = pd.to_datetime(history_df['date'])
+
+        churn_features = {}
+
+        # Calculate total transaction amount
+        history_df['total_amt'] = (
+            history_df['mobile_eft_all_amt'].fillna(0) +
+            history_df['cc_transaction_all_amt'].fillna(0)
+        )
+
+        # 1. SPENDING DECLINE SIGNALS
+        # Compare 3M vs 6M spending
+        recent_3m_start = ref_date - pd.DateOffset(months=3)
+        mid_6m_start = ref_date - pd.DateOffset(months=6)
+        mid_3m_start = recent_3m_start
+
+        recent_3m = history_df[(history_df['date'] > recent_3m_start) & (history_df['date'] <= ref_date)]
+        prev_3m = history_df[(history_df['date'] > mid_6m_start) & (history_df['date'] <= mid_3m_start)]
+
+        recent_3m_amt = recent_3m.groupby('cust_id')['total_amt'].sum()
+        prev_3m_amt = prev_3m.groupby('cust_id')['total_amt'].sum()
+
+        # Spending decline % (negative = declining)
+        churn_features['churn_spending_decline_3m_vs_6m'] = (
+            (recent_3m_amt - prev_3m_amt) / (prev_3m_amt + 1) * 100
+        )
+
+        # Severe decline flag (>50% drop)
+        churn_features['churn_severe_decline_flag'] = (
+            churn_features['churn_spending_decline_3m_vs_6m'] < -50
+        ).astype(int)
+
+        # 2. CONSECUTIVE MONTHS NO ACTIVITY
+        last_12m = ref_date - pd.DateOffset(months=12)
+        recent_history = history_df[history_df['date'] > last_12m].copy()
+        recent_history['month'] = recent_history['date'].dt.to_period('M')
+
+        # For each customer, count consecutive months without activity from ref_date backward
+        all_months = pd.period_range(start=last_12m, end=ref_date, freq='M')
+
+        def count_consecutive_inactive(group):
+            active_months = set(group['month'].unique())
+            consecutive = 0
+            for month in reversed(all_months):
+                if month not in active_months:
+                    consecutive += 1
+                else:
+                    break
+            return consecutive
+
+        if not recent_history.empty:
+            consecutive_inactive = recent_history.groupby('cust_id').apply(count_consecutive_inactive)
+        else:
+            consecutive_inactive = pd.Series(dtype=int)
+
+        churn_features['churn_consecutive_months_no_activity'] = consecutive_inactive
+
+        # 3. PRODUCT ABANDONMENT COUNT
+        # Products used in months 7-12 but NOT in months 1-6
+        old_6m_start = ref_date - pd.DateOffset(months=12)
+        old_6m_end = ref_date - pd.DateOffset(months=6)
+        recent_6m_start = old_6m_end
+
+        old_6m_data = history_df[(history_df['date'] > old_6m_start) & (history_df['date'] <= old_6m_end)]
+        recent_6m_data = history_df[(history_df['date'] > recent_6m_start) & (history_df['date'] <= ref_date)]
+
+        old_products = old_6m_data.groupby('cust_id')['active_product_category_nbr'].apply(set)
+        recent_products = recent_6m_data.groupby('cust_id')['active_product_category_nbr'].apply(set)
+
+        def count_abandoned_products(cust_id):
+            if cust_id not in old_products.index:
+                return 0
+            if cust_id not in recent_products.index:
+                return len(old_products[cust_id])
+            abandoned = old_products[cust_id] - recent_products[cust_id]
+            return len(abandoned)
+
+        all_cust_ids = pd.Index(history_df['cust_id'].unique())
+        churn_features['churn_product_abandonment_count'] = pd.Series(
+            [count_abandoned_products(cid) for cid in all_cust_ids],
+            index=all_cust_ids
+        )
+
+        # 4. TRANSACTION FREQUENCY DROP
+        recent_3m_txn = recent_3m.groupby('cust_id').size()
+        prev_3m_txn = prev_3m.groupby('cust_id').size()
+
+        churn_features['churn_txn_frequency_drop_pct'] = (
+            (recent_3m_txn - prev_3m_txn) / (prev_3m_txn + 1) * 100
+        )
+
+        # 5. AVERAGE TRANSACTION SIZE DROP
+        recent_3m_avg_txn = recent_3m_amt / (recent_3m_txn + 1)
+        prev_3m_avg_txn = prev_3m_amt / (prev_3m_txn + 1)
+
+        churn_features['churn_avg_txn_size_drop_pct'] = (
+            (recent_3m_avg_txn - prev_3m_avg_txn) / (prev_3m_avg_txn + 1) * 100
+        )
+
+        # 6. BALANCE DECLINE VELOCITY (if balance data available)
+        # Using transaction amounts as proxy for account activity
+        # Calculate monthly spending trend (slope)
+        monthly_spending = history_df[history_df['date'] > last_12m].copy()
+        monthly_spending['month_num'] = (monthly_spending['date'].dt.year - last_12m.year) * 12 + \
+                                        (monthly_spending['date'].dt.month - last_12m.month)
+
+        def calculate_spending_slope(group):
+            if len(group) < 2:
+                return 0
+            monthly_sums = group.groupby('month_num')['total_amt'].sum()
+            if len(monthly_sums) < 2:
+                return 0
+            x = np.array(monthly_sums.index)
+            y = np.array(monthly_sums.values)
+            slope = np.polyfit(x, y, 1)[0]
+            return slope
+
+        if not monthly_spending.empty:
+            spending_slopes = monthly_spending.groupby('cust_id').apply(calculate_spending_slope)
+        else:
+            spending_slopes = pd.Series(dtype=float)
+
+        churn_features['churn_balance_decline_velocity'] = spending_slopes
+
+        # 7. CHANNEL DIVERSITY DROP
+        # Assume different transaction types indicate different channels
+        def count_txn_types(group):
+            types = 0
+            if (group['mobile_eft_all_amt'].fillna(0) > 0).any():
+                types += 1
+            if (group['cc_transaction_all_amt'].fillna(0) > 0).any():
+                types += 1
+            return types
+
+        recent_3m_channels = recent_3m.groupby('cust_id').apply(count_txn_types)
+        prev_3m_channels = prev_3m.groupby('cust_id').apply(count_txn_types)
+
+        churn_features['churn_channel_diversity_drop'] = prev_3m_channels - recent_3m_channels
+
+        # 8. RFM DECAY RATE (for top-decile targeting)
+        # Compare RFM scores from 3M vs 6M windows
+        def calculate_rfm_score_window(data, window_start, window_end):
+            window_data = data[(data['date'] > window_start) & (data['date'] <= window_end)]
+            if window_data.empty:
+                return pd.Series(dtype=float)
+
+            last_txn = window_data.groupby('cust_id')['date'].max()
+            recency = (window_end - last_txn).dt.days
+            frequency = window_data.groupby('cust_id').size()
+            monetary = window_data.groupby('cust_id')['total_amt'].sum()
+
+            # Simple RFM score: normalize and combine
+            rfm_score = (
+                0.3 * (1 - recency / 180) +  # Normalize to ~6 months
+                0.4 * (frequency / frequency.quantile(0.95)).clip(0, 1) +
+                0.3 * (monetary / monetary.quantile(0.95)).clip(0, 1)
+            )
+            return rfm_score
+
+        recent_rfm = calculate_rfm_score_window(history_df, recent_3m_start, ref_date)
+        prev_rfm = calculate_rfm_score_window(history_df, mid_6m_start, mid_3m_start)
+
+        # Align indices
+        common_idx = recent_rfm.index.intersection(prev_rfm.index)
+        rfm_decay = pd.Series(index=all_cust_ids, dtype=float)
+        if len(common_idx) > 0:
+            rfm_decay.loc[common_idx] = prev_rfm.loc[common_idx] - recent_rfm.loc[common_idx]
+
+        churn_features['churn_rfm_decay_rate'] = rfm_decay
+
+        # 9. PERCENTILE RANK OF RECENCY WITHIN SEGMENT
+        # Using customer age as segment proxy
+        customers_subset = customers_df.set_index('cust_id')
+
+        last_txn_all = history_df.groupby('cust_id')['date'].max()
+        recency_days = (ref_date - last_txn_all).dt.days
+
+        # Merge with age data
+        recency_with_age = pd.DataFrame({
+            'recency': recency_days,
+            'age': customers_subset['age']
+        })
+
+        # Calculate percentile within age quartiles
+        recency_with_age['age_quartile'] = pd.qcut(
+            recency_with_age['age'].fillna(recency_with_age['age'].median()),
+            q=4,
+            labels=False,
+            duplicates='drop'
+        )
+
+        def calc_percentile_rank(group):
+            return group.rank(pct=True)
+
+        recency_with_age['recency_pctile_in_segment'] = recency_with_age.groupby('age_quartile')['recency'].transform(calc_percentile_rank)
+
+        churn_features['churn_recency_percentile_in_age_segment'] = recency_with_age['recency_pctile_in_segment']
+
+        # 10. RATIO OF CURRENT TO PEAK HISTORICAL ACTIVITY
+        # Find peak 3-month activity window
+        monthly_txn_counts = history_df.copy()
+        monthly_txn_counts['month'] = monthly_txn_counts['date'].dt.to_period('M')
+        monthly_counts = monthly_txn_counts.groupby(['cust_id', 'month']).size().reset_index(name='count')
+
+        # Rolling 3-month sums
+        monthly_counts_pivot = monthly_counts.pivot(index='month', columns='cust_id', values='count').fillna(0)
+        rolling_3m = monthly_counts_pivot.rolling(window=3, min_periods=1).sum()
+
+        peak_3m_activity = rolling_3m.max()
+        current_3m_activity = recent_3m.groupby('cust_id').size()
+
+        churn_features['churn_current_to_peak_activity_ratio'] = (
+            current_3m_activity / (peak_3m_activity + 1)
+        )
+
+        churn_df = pd.DataFrame(churn_features)
+
+        # Handle missing values
+        churn_df = churn_df.fillna(-999)
+
+        print(f"    [OK] Created {len(churn_df.columns)} churn risk features")
+
+        return churn_df
 
     def create_all_advanced_features(self, history_df, customers_df, ref_date):
         """
@@ -937,6 +1188,7 @@ class AdvancedFeatureEngineering:
         - Behavioral Change Detection
         - Customer Lifecycle Features
         - Time-based Features
+        - Churn Risk Features (NEW)
 
         Parameters:
         -----------
@@ -965,12 +1217,17 @@ class AdvancedFeatureEngineering:
         # 4. Time-based Features
         time_features = self.create_time_based_features(history_df, customers_df, ref_date)
 
+        # 5. Churn Risk Features (NEW - targeting top-decile)
+        # TEMPORARILY DISABLED - showing zero importance
+        # churn_risk_features = self.create_churn_risk_features(history_df, customers_df, ref_date)
+
         # Combine all features
         all_features = pd.concat([
             rfm_features,
             behavioral_features,
             lifecycle_features,
-            time_features
+            time_features,
+            # churn_risk_features  # DISABLED
         ], axis=1)
 
         # Reset index to have cust_id as column
@@ -981,7 +1238,7 @@ class AdvancedFeatureEngineering:
         # Winsorize trend/ratio-like features to reduce outlier impact
         win_logs = _winsorize_trend_ratio_columns(all_features, lower_pct=1.0, upper_pct=99.0)
         if win_logs:
-            print(f"    ✓ Winsorized {len(win_logs)} trend/ratio columns:")
+            print(f"    [OK] Winsorized {len(win_logs)} trend/ratio columns:")
             for msg in win_logs[:20]:  # avoid overly verbose logs
                 print(f"      - {msg}")
             if len(win_logs) > 20:
@@ -991,8 +1248,8 @@ class AdvancedFeatureEngineering:
         all_features = all_features.fillna(-999)
         all_features = all_features.replace([np.inf, -np.inf], -999)
 
-        print(f"\n✓ Total advanced features created: {len(all_features.columns) - 1}")
-        print(f"✓ Customers processed: {len(all_features)}")
+        print(f"\n[OK] Total advanced features created: {len(all_features.columns) - 1}")
+        print(f"[OK] Customers processed: {len(all_features)}")
 
         return all_features
 

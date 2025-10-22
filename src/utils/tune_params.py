@@ -185,7 +185,7 @@ def run_tuning(model_name: str, trials: int, last_n: int, timeout: int | None = 
     }
     with open(json_path, 'w') as f:
         json.dump(payload, f, indent=2)
-    print(f"\n✓ Saved tuned params to {json_path}")
+    print(f"\n[OK] Saved tuned params to {json_path}")
 
     # Update or create optimized_params.py
     opt_py = Path('optimized_params.py')
@@ -241,7 +241,7 @@ def run_tuning(model_name: str, trials: int, last_n: int, timeout: int | None = 
 
     with open(opt_py, 'w', encoding='utf-8') as f:
         f.write(content)
-    print(f"✓ Updated {opt_py} with best {tag.upper()} params")
+    print(f"[OK] Updated {opt_py} with best {tag.upper()} params")
 
     print(f"\nBest {tag.upper()} score: {best_score:.6f}")
     print("Best params:")

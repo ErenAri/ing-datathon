@@ -50,16 +50,16 @@ def load_data():
         reference_data = pd.read_csv(_resolve_data_path('reference_data.csv'))
         reference_data_test = pd.read_csv(_resolve_data_path('reference_data_test.csv'))
 
-        print(f"✓ Customer history shape: {customer_history.shape}")
-        print(f"✓ Customers shape: {customers.shape}")
-        print(f"✓ Reference train shape: {reference_data.shape}")
-        print(f"✓ Reference test shape: {reference_data_test.shape}")
-        print(f"✓ Churn rate: {reference_data['churn'].mean():.4f}")
+        print(f"[OK] Customer history shape: {customer_history.shape}")
+        print(f"[OK] Customers shape: {customers.shape}")
+        print(f"[OK] Reference train shape: {reference_data.shape}")
+        print(f"[OK] Reference test shape: {reference_data_test.shape}")
+        print(f"[OK] Churn rate: {reference_data['churn'].mean():.4f}")
 
         return customer_history, customers, reference_data, reference_data_test
 
     except FileNotFoundError as e:
-        print(f"\n✗ ERROR: Could not find required CSV file: {e}")
+        print(f"\n[FAIL] ERROR: Could not find required CSV file: {e}")
         print("  Please ensure all CSV files are available under one of:")
         print("  - data/raw/")
         print("  - data/")
@@ -70,7 +70,7 @@ def load_data():
         print("  - reference_data_test.csv")
         raise
     except Exception as e:
-        print(f"\n✗ ERROR loading data: {e}")
+        print(f"\n[FAIL] ERROR loading data: {e}")
         raise
 
 # ============================================================================
@@ -114,11 +114,11 @@ def create_training_features(customer_history, customers, reference_data):
             features['ref_date'] = ref_date
 
             train_features_list.append(features)
-            print(f"  ✓ Created {features.shape[1]} features for {features.shape[0]} customers")
+            print(f"  [OK] Created {features.shape[1]} features for {features.shape[0]} customers")
 
         # Combine all training features
         train_features = pd.concat(train_features_list, axis=0, ignore_index=True)
-        print(f"\n✓ Combined training features shape: {train_features.shape}")
+        print(f"\n[OK] Combined training features shape: {train_features.shape}")
 
         # Merge with labels
         train_data = train_features.merge(
@@ -127,22 +127,22 @@ def create_training_features(customer_history, customers, reference_data):
             how='left'
         )
 
-        print(f"✓ Training data with labels shape: {train_data.shape}")
+        print(f"[OK] Training data with labels shape: {train_data.shape}")
 
         missing_labels = train_data['churn'].isna().sum()
         if missing_labels > 0:
-            print(f"⚠ WARNING: {missing_labels} missing labels")
+            print(f"[WARN] WARNING: {missing_labels} missing labels")
         else:
-            print(f"✓ No missing labels")
+            print(f"[OK] No missing labels")
 
         return train_data
 
     except ImportError:
-        print("\n✗ ERROR: Could not import ChurnFeatureEngineering")
+        print("\n[FAIL] ERROR: Could not import ChurnFeatureEngineering")
         print("  Please ensure feature_engineering.py is in the current directory")
         raise
     except Exception as e:
-        print(f"\n✗ ERROR creating training features: {e}")
+        print(f"\n[FAIL] ERROR creating training features: {e}")
         raise
 
 def create_test_features(customer_history, customers, reference_data_test):
@@ -179,15 +179,15 @@ def create_test_features(customer_history, customers, reference_data_test):
             features['ref_date'] = ref_date
 
             test_features_list.append(features)
-            print(f"  ✓ Created {features.shape[1]} features for {features.shape[0]} customers")
+            print(f"  [OK] Created {features.shape[1]} features for {features.shape[0]} customers")
 
         test_features = pd.concat(test_features_list, axis=0, ignore_index=True)
-        print(f"\n✓ Combined test features shape: {test_features.shape}")
+        print(f"\n[OK] Combined test features shape: {test_features.shape}")
 
         return test_features
 
     except Exception as e:
-        print(f"\n✗ ERROR creating test features: {e}")
+        print(f"\n[FAIL] ERROR creating test features: {e}")
         raise
 
 # ============================================================================
@@ -210,9 +210,9 @@ def prepare_modeling_data(train_data, test_features):
         ref_dates = train_data['ref_date'].copy()
         X_test = test_features[feature_cols].copy()
 
-        print(f"✓ X_train shape: {X_train.shape}")
-        print(f"✓ y_train shape: {y_train.shape}")
-        print(f"✓ X_test shape: {X_test.shape}")
+        print(f"[OK] X_train shape: {X_train.shape}")
+        print(f"[OK] y_train shape: {y_train.shape}")
+        print(f"[OK] X_test shape: {X_test.shape}")
 
         # Handle infinity values
         print("\nHandling infinity values...")
@@ -223,14 +223,14 @@ def prepare_modeling_data(train_data, test_features):
             print(f"  Found {inf_count_train} inf values in train, {inf_count_test} in test")
             X_train = X_train.replace([np.inf, -np.inf], -999)
             X_test = X_test.replace([np.inf, -np.inf], -999)
-            print("  ✓ Replaced with -999")
+            print("  [OK] Replaced with -999")
         else:
-            print("  ✓ No infinity values found")
+            print("  [OK] No infinity values found")
 
         return X_train, y_train, X_test, feature_cols, ref_dates
 
     except Exception as e:
-        print(f"\n✗ ERROR preparing modeling data: {e}")
+        print(f"\n[FAIL] ERROR preparing modeling data: {e}")
         raise
 
 # ============================================================================
@@ -285,7 +285,7 @@ def add_feature_interactions(X_train, X_test):
                 X_test[interaction_name_ratio2] = X_test[feat2] / (X_test[feat1] + 1)
                 interaction_count += 1
 
-        print(f"  ✓ Created {len(existing_features) * (len(existing_features) - 1) // 2} feature pairs")
+        print(f"  [OK] Created {len(existing_features) * (len(existing_features) - 1) // 2} feature pairs")
 
         # Handle any infinity values created by interactions
         inf_count_train = np.isinf(X_train.values).sum()
@@ -296,14 +296,14 @@ def add_feature_interactions(X_train, X_test):
             X_train = X_train.replace([np.inf, -np.inf], -999)
             X_test = X_test.replace([np.inf, -np.inf], -999)
 
-        print(f"\n✓ Total interactions created: {interaction_count}")
-        print(f"✓ New X_train shape: {X_train.shape}")
-        print(f"✓ New X_test shape: {X_test.shape}")
+        print(f"\n[OK] Total interactions created: {interaction_count}")
+        print(f"[OK] New X_train shape: {X_train.shape}")
+        print(f"[OK] New X_test shape: {X_test.shape}")
 
         return X_train, X_test
 
     except Exception as e:
-        print(f"\n✗ ERROR creating feature interactions: {e}")
+        print(f"\n[FAIL] ERROR creating feature interactions: {e}")
         raise
 
 # ============================================================================
@@ -321,31 +321,31 @@ def save_pickle_files(X_train, y_train, X_test, feature_cols, ref_dates):
         print("\nSaving X_train.pkl...")
         with open('X_train.pkl', 'wb') as f:
             pickle.dump(X_train, f)
-        print(f"  ✓ Saved X_train.pkl ({X_train.shape[0]} rows, {X_train.shape[1]} columns)")
+        print(f"  [OK] Saved X_train.pkl ({X_train.shape[0]} rows, {X_train.shape[1]} columns)")
 
         # Save y_train
         print("\nSaving y_train.pkl...")
         with open('y_train.pkl', 'wb') as f:
             pickle.dump(y_train, f)
-        print(f"  ✓ Saved y_train.pkl ({len(y_train)} labels)")
+        print(f"  [OK] Saved y_train.pkl ({len(y_train)} labels)")
 
         # Save X_test
         print("\nSaving X_test.pkl...")
         with open('X_test.pkl', 'wb') as f:
             pickle.dump(X_test, f)
-        print(f"  ✓ Saved X_test.pkl ({X_test.shape[0]} rows, {X_test.shape[1]} columns)")
+        print(f"  [OK] Saved X_test.pkl ({X_test.shape[0]} rows, {X_test.shape[1]} columns)")
 
         # Save feature_cols
         print("\nSaving feature_cols.pkl...")
         with open('feature_cols.pkl', 'wb') as f:
             pickle.dump(feature_cols, f)
-        print(f"  ✓ Saved feature_cols.pkl ({len(feature_cols)} feature names)")
+        print(f"  [OK] Saved feature_cols.pkl ({len(feature_cols)} feature names)")
 
         # Save ref_dates
         print("\nSaving ref_dates.pkl...")
         with open('ref_dates.pkl', 'wb') as f:
             pickle.dump(ref_dates, f)
-        print(f"  ✓ Saved ref_dates.pkl ({len(ref_dates)} dates, aligned to X_train)")
+        print(f"  [OK] Saved ref_dates.pkl ({len(ref_dates)} dates, aligned to X_train)")
 
         # Print summary
         print("\n" + "="*60)
@@ -364,7 +364,7 @@ def save_pickle_files(X_train, y_train, X_test, feature_cols, ref_dates):
         print("      X_train = pickle.load(f)")
 
     except Exception as e:
-        print(f"\n✗ ERROR saving pickle files: {e}")
+        print(f"\n[FAIL] ERROR saving pickle files: {e}")
         raise
 
 # ============================================================================

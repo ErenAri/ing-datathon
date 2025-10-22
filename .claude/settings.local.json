@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(tee:*)",
+      "Bash(.\\venv\\Scripts\\python.exe:*)",
+      "Bash($PSVersionTable.PSVersion)",
+      "Bash(venv/Scripts/python.exe:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
