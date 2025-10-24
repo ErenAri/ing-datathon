@@ -1,4 +1,4 @@
-# ING Hubs Türkiye Datathon 2024 - Churn Prediction Solution
+# ING Hubs Türkiye Datathon 2025 - Churn Prediction Solution
 
 **Final Rank: 50th / 700 teams (Top 7%)**  
 **Final Score: 1.23107**  
