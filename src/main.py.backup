@@ -153,11 +153,9 @@ print(f"\nChurn rate: {reference_data['churn'].mean():.4f}")
 # Import the feature engineering classes
 from src.features.feature_engineering import ChurnFeatureEngineering
 from src.features.advanced_features import AdvancedFeatureEngineering
-from src.features.performance_features import PerformanceFeatureEngineering
 
 fe = ChurnFeatureEngineering()
 afe = AdvancedFeatureEngineering()
-pfe = PerformanceFeatureEngineering()  # NEW: Performance features for top 20
 
 # Process each reference date separately
 train_features_list = []
@@ -187,12 +185,8 @@ for ref_date in reference_data['ref_date'].unique():
     # Create advanced features (RFM, behavioral change, lifecycle, time-based)
     advanced_features = afe.create_all_advanced_features(history_subset, customers_subset, ref_date)
 
-    # Create performance features (top-decile targeting)
-    performance_features = pfe.create_all_performance_features(history_subset, customers_subset, ref_date)
-
-    # Merge all features
+    # Merge basic and advanced features
     features = features.merge(advanced_features, on='cust_id', how='left')
-    features = features.merge(performance_features, on='cust_id', how='left')
     features['ref_date'] = ref_date
 
     train_features_list.append(features)
@@ -255,12 +249,8 @@ for ref_date in reference_data_test['ref_date'].unique():
     # Create advanced features (RFM, behavioral change, lifecycle, time-based)
     advanced_features = afe.create_all_advanced_features(history_subset, customers_subset, ref_date)
 
-    # Create performance features (top-decile targeting)
-    performance_features = pfe.create_all_performance_features(history_subset, customers_subset, ref_date)
-
-    # Merge all features
+    # Merge basic and advanced features
     features = features.merge(advanced_features, on='cust_id', how='left')
-    features = features.merge(performance_features, on='cust_id', how='left')
     features['ref_date'] = ref_date
 
     test_features_list.append(features)
@@ -554,7 +544,7 @@ else:
     X_train, X_test = add_feature_interactions(
         X_train,
         X_test,
-        top_n=max(2, int(getattr(args, 'interaction_top_n', 5) or 5)),  # IMPROVEMENT 3: Fewer interactions (60 instead of 168)
+        top_n=max(2, int(getattr(args, 'interaction_top_n', 8) or 8)),
         importance_path=getattr(args, 'interaction_importance_path', None)
     )
 
@@ -1123,7 +1113,7 @@ def _optimize_month(mask):
 
 # Build month masks
 m = pd.to_datetime(train_data['ref_date']).dt.to_period('M')
-target_months = ['2017-09', '2017-11', '2017-12', '2018-09', '2018-11', '2018-12']  # IMPROVEMENT 2: Extended CV
+target_months = ['2018-09', '2018-11', '2018-12']
 month_masks = {str(vm): (m.values == vm) for vm in sorted(m.unique())}
 
 per_month_weights = {}
@@ -1170,7 +1160,7 @@ if USE_FIXED_WEIGHTS:
         'meta': 0.1025
     }
     # Only use weights for models that exist
-    final_weights = {n: 1.0/len(names) for n in names}  # IMPROVEMENT 1: Equal weights
+    final_weights = {n: baseline_weights.get(n, 0.0) for n in names}
     # Renormalize in case some models are missing
     sum_w = sum(final_weights.values())
     if sum_w > 0:

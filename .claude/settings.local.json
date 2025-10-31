@@ -6,7 +6,15 @@
       "Bash(.\\venv\\Scripts\\python.exe:*)",
       "Bash($PSVersionTable.PSVersion)",
       "Bash(venv/Scripts/python.exe:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(dir:*)",
+      "Bash(cat:*)",
+      "Read(//c/**)",
+      "Bash(git checkout:*)",
+      "Bash(rm:*)",
+      "Bash(pip install:*)"
     ],
     "deny": [],
     "ask": []

@@ -38,7 +38,7 @@ def train_robust_stacker(oof_predictions_dict: Dict[str, np.ndarray], y_train: n
     if not base_order:
         raise ValueError("No base OOF predictions provided for stacker.")
     X_meta = np.vstack([_safe_array(oof_predictions_dict[k]) for k in base_order]).T
-    y = _safe_array(y_train)
+    y = np.asarray(y_train, dtype=int).reshape(-1)  # FIX: Must be int for classifier
 
     # Time-based CV for LR hyperparameters
     # We use TimeSeriesSplit as a simple proxy (assuming y is already time-ordered); otherwise set cv=5
